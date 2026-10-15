@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>outbound</title>
+  <!-- tools/make-icons derives the executable icon and the tray icons from this file. It looks for
+       the background color and the glyph group below, so keep both as they are. Colors are in
+       OKLCH; the tool turns them into sRGB when it renders. -->
+  <rect width="256" height="256" rx="58" fill="oklch(0.33 0.055 215)"/>
+  <g id="glyph">
+    <!-- the arrow: a file on its way out -->
+    <path d="M128 132V50M90 86l38-38 38 38" fill="none" stroke="oklch(1 0 0)" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- the wake it leaves behind -->
+    <circle cx="128" cy="162" r="11" fill="oklch(1 0 0)" opacity=".75"/>
+    <circle cx="128" cy="186" r="8" fill="oklch(1 0 0)" opacity=".5"/>
+    <circle cx="128" cy="204" r="5" fill="oklch(1 0 0)" opacity=".3"/>
+  </g>
+</svg>

@@ -1,0 +1,97 @@
+name: Release
+
+# Builds and publishes the Windows binary when the version in Cargo.toml has no tag yet. To release,
+# bump the version in Cargo.toml (and Cargo.lock) in the same commit. Only Windows is released:
+# macOS and Linux are compiled in CI but never tested by hand.
+#
+# The release also carries a Scoop manifest, made from Cargo.toml by tools/package, and asks
+# the Scoop bucket to import it, which opens a pull request there. That needs a secret called
+# SCOOP_BUCKET_TOKEN, see CONTRIBUTING.md. Without it the release is still published.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+      name: ${{ steps.check.outputs.name }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          name=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      NAME: ${{ needs.check.outputs.name }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+
+      # The binary is a single portable file. The packaging tool names it, writes its sha256 and the Scoop
+      # manifest, all from Cargo.toml and the build.
+      - name: Package
+        run: cargo run --release --locked --manifest-path tools/package/Cargo.toml -- "target/release/$NAME.exe" dist
+
+      # The notes list the commits since the previous release; pull request notes would miss
+      # commits pushed straight to main.
+      - name: Tag and create the GitHub release
+        run: |
+          previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          notes=$(git log ${previous:+"$previous..HEAD"} --no-merges --invert-grep --grep='^chore(release)' --pretty='- %s (%h)')
+          if [ -n "$previous" ]; then
+            notes="$notes"$'\n\n'"**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$previous...v$VERSION"
+          fi
+          gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "$VERSION" --notes "$notes"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # The workflow token cannot reach another repository, so this uses its own token. The bucket
+      # is the repository called scoop-bucket of the same owner, unless the repository variable
+      # SCOOP_BUCKET names another one.
+      - name: Ask the Scoop bucket to import the manifest
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::SCOOP_BUCKET_TOKEN is not set, so the Scoop bucket was not updated"
+            exit 0
+          fi
+          gh workflow run import-manifest.yml --repo "$BUCKET" -f repo="$GITHUB_REPOSITORY" -f tag="v$VERSION"
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          BUCKET: ${{ vars.SCOOP_BUCKET || format('{0}/scoop-bucket', github.repository_owner) }}
