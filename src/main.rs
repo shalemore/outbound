@@ -405,11 +405,8 @@ impl Tray {
         } else if let Some((_, local, remote)) =
             self.removable.iter().find(|(item, ..)| item.id() == id)
         {
-            let question = format!(
-                "Stop sending {local} to {remote} and remove it from the configuration?\n\n\
-                 Nothing is deleted, neither here nor on the VPS."
-            );
-            if dialog::confirm(&question) {
+            let details = format!("It stops being sent to {remote}. No file is deleted.");
+            if dialog::confirm(&format!("Remove {local}?"), &details, "Remove") {
                 match actions::remove_folder(local) {
                     Ok(()) => {
                         let _ = context.commands.send(Command::SyncNow);
@@ -445,10 +442,11 @@ fn set_text(item: &MenuItem, text: String) {
 /// Asks, removes what the program has put on this machine, checks it and only then quits. The
 /// program file stays where it is.
 fn clean_up_and_quit() -> bool {
-    let question = "Remove the notification entries that Outbound added to Windows, and quit?\n\n\
-                    Do this before you delete the program. Your configuration, your log and \
-                    the program file are kept.";
-    if !dialog::confirm(question) {
+    if !dialog::confirm(
+        "Remove the notification entries and quit?",
+        "Do this before you delete the program. Your configuration and log are kept.",
+        "Cleanup",
+    ) {
         return false;
     }
     let outcome = cleanup::run();

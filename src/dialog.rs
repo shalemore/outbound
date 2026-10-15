@@ -8,17 +8,20 @@ use windows::{
             CoTaskMemFree,
         },
         UI::{
+            Controls::{
+                TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TDF_ALLOW_DIALOG_CANCELLATION,
+                TaskDialogIndirect,
+            },
             Shell::{
                 FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
                 SIGDN_FILESYSPATH,
             },
             WindowsAndMessaging::{
-                IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO,
-                MESSAGEBOX_STYLE, MessageBoxW,
+                MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MESSAGEBOX_STYLE, MessageBoxW,
             },
         },
     },
-    core::{HSTRING, w},
+    core::{HSTRING, PCWSTR, w},
 };
 
 use crate::ssh::Browse;
@@ -61,9 +64,42 @@ pub fn ask_remote_folder(local: &std::path::Path, initial: &str, lookup: Lookup)
     crate::remote_dialog::ask(local, initial, lookup).filter(|text| !text.is_empty())
 }
 
-/// A yes or no question. Closing the dialog counts as no.
-pub fn confirm(message: &str) -> bool {
-    show(message, MB_YESNO | MB_ICONWARNING) == IDYES.0
+/// A question with a heading and a smaller explanation below it. The button that does it is
+/// called `action`; closing the dialog counts as cancelling.
+pub fn confirm(heading: &str, details: &str, action: &str) -> bool {
+    const ACTION: i32 = 100;
+    const CANCEL: i32 = 101;
+    let (title, heading, details) = (
+        HSTRING::from("Outbound"),
+        HSTRING::from(heading),
+        HSTRING::from(details),
+    );
+    let (action_text, cancel_text) = (HSTRING::from(action), HSTRING::from("Cancel"));
+    let buttons = [
+        TASKDIALOG_BUTTON {
+            nButtonID: ACTION,
+            pszButtonText: PCWSTR(action_text.as_ptr()),
+        },
+        TASKDIALOG_BUTTON {
+            nButtonID: CANCEL,
+            pszButtonText: PCWSTR(cancel_text.as_ptr()),
+        },
+    ];
+    let config = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION,
+        pszWindowTitle: PCWSTR(title.as_ptr()),
+        pszMainInstruction: PCWSTR(heading.as_ptr()),
+        pszContent: PCWSTR(details.as_ptr()),
+        cButtons: buttons.len() as u32,
+        pButtons: buttons.as_ptr(),
+        nDefaultButton: CANCEL,
+        ..Default::default()
+    };
+    let mut pressed = 0;
+    // SAFETY: the strings and the buttons live until the call returns.
+    let shown = unsafe { TaskDialogIndirect(&config, Some(&mut pressed), None, None) };
+    shown.is_ok() && pressed == ACTION
 }
 
 pub fn info(message: &str) {
@@ -83,20 +119,24 @@ fn show(message: &str, style: MESSAGEBOX_STYLE) -> i32 {
 mod tests {
     use super::*;
 
-    /// Opens the pickers and boxes, to look at them. Run it with
-    /// `cargo test --release show_the_pickers -- --ignored`.
+    /// Opens the folder picker, to look at it. Run it with
+    /// `cargo test --release show_the_picker -- --ignored`.
     #[test]
     #[ignore]
-    fn show_the_pickers() {
+    fn show_the_picker() {
         eprintln!(
             "picked: {:?}",
             pick_folder("Choose the local folder to send to the VPS")
         );
-        eprintln!(
-            "confirmed: {}",
-            confirm(
-                "Stop sending D:/a to /data/a and remove it from the configuration?\n\nNothing is deleted, neither here nor on the VPS."
-            )
-        );
+    }
+
+    /// Opens the question, to look at it. Run it with
+    /// `cargo test --release show_the_question -- --ignored`.
+    #[test]
+    #[ignore]
+    fn show_the_question() {
+        let heading = r"Remove D:\Downloads\outbox?";
+        let details = "It stops being sent to /data/videos. No file is deleted.";
+        eprintln!("confirmed: {}", confirm(heading, details, "Remove"));
     }
 }
