@@ -72,14 +72,28 @@ jobs:
 
       # The notes list the commits since the previous release; pull request notes would miss
       # commits pushed straight to main.
+      # The notes only list what a user notices, grouped by kind. The type of the commit subject
+      # decides: feat, perf and fix, and a "!" after the type marks a breaking change. docs, ci,
+      # build, refactor, test and chore commits are left out.
       - name: Tag and create the GitHub release
         run: |
           previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
-          notes=$(git log ${previous:+"$previous..HEAD"} --no-merges --invert-grep --grep='^chore(release)' --pretty='- %s (%h)')
-          if [ -n "$previous" ]; then
-            notes="$notes"$'\n\n'"**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$previous...v$VERSION"
-          fi
-          gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "$VERSION" --notes "$notes"
+          section() {
+            lines=$(git log ${previous:+"$previous..HEAD"} --no-merges --format=%s \
+              | grep -E "^($2)(\([^)]*\))?$3: " \
+              | sed -E 's/^[a-z]+(\([^)]*\))?!?: //; s/^(.)/\U\1/; s/([^.])$/\1./; s/^/* /')
+            if [ -n "$lines" ]; then printf '### %s\n\n%s\n\n' "$1" "$lines"; fi
+          }
+          {
+            section '⚠️ Breaking changes' '[a-z]+' '!'
+            section '✨ New features' feat ''
+            section '🎨 Improvements' perf ''
+            section '🐛 Bug fixes' fix ''
+            if [ -n "$previous" ]; then
+              echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$previous...v$VERSION"
+            fi
+          } > notes.md
+          gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "$VERSION" --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
 

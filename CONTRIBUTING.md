@@ -36,7 +36,7 @@ cargo run --release --manifest-path tools/make-icons/Cargo.toml -- preview sheet
 
 ## Releasing
 
-Change `version` in `Cargo.toml` on `main` (and `Cargo.lock`), and commit it as `chore(release): x.y.z`. When the version has no tag yet, `release.yml` builds the binary and creates a GitHub release listing the commits since the previous one.
+Change `version` in `Cargo.toml` on `main` (and `Cargo.lock`), and commit it as `chore(release): x.y.z`. When the version has no tag yet, `release.yml` builds the binary and creates a GitHub release. Its notes are made from the commit subjects since the previous release, grouped by type: `feat` under new features, `perf` under improvements, `fix` under bug fixes, and a `!` after the type, as in `feat!:`, under breaking changes. Other types, such as `docs`, `ci`, `build`, `refactor` and `test`, are left out, so give a change that users notice one of those three types and a subject that makes sense to them.
 
 The release has three files: the program, its sha256 and a Scoop manifest. `tools/package` makes them from `Cargo.toml` (including its `[package.metadata.scoop]` table) and the build; CI runs it on every change.
 
