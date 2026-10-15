@@ -1,9 +1,19 @@
 name: CI
 
+# A change to the README alone does not start it.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - README.md
   pull_request:
+    paths-ignore:
+      - README.md
+
+# A newer push to the same branch makes the run of the older one pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
