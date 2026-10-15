@@ -7,6 +7,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
+/// What a configuration without a server says, also on the very first run.
+const CHOOSE_HOST: &str = "Choose the SSH host, then add a folder, both in this menu";
+
 const TEMPLATE: &str = r#"# outbound configuration. Changes take effect on the next scan.
 # The tray menu can also set the ssh host and add folder mappings; it writes this file.
 # In paths, use forward slashes (D:/Downloads) or single-quoted strings ('D:\Downloads').
@@ -31,17 +34,17 @@ const TEMPLATE: &str = r#"# outbound configuration. Changes take effect on the n
 # bandwidth_limit = "10 MiB/s"
 
 [ssh]
-# The ssh target: an alias from ~/.ssh/config, or user@host.
+# The ssh target: an alias from ~/.ssh/config, or user@host. The tray menu can choose one.
 # Authentication is left to the system ssh, so keys, ssh-agent and ProxyJump work as usual.
-destination = "user@example.com"
+destination = ""
 # port = 22
 # identity_file = "C:/Users/you/.ssh/id_ed25519"
 
-# Local folder -> remote folder. Both folders must already exist. Add as many mappings as you like;
-# they all run in the background together.
-[[mapping]]
-local = "D:/Downloads/outbox"
-remote = "/data/videos"
+# Local folder -> folder on the server. Both folders must already exist. The tray menu adds them,
+# and there can be as many as you like; they all run in the background together.
+# [[mapping]]
+# local = "D:/Downloads/outbox"
+# remote = "/data/videos"
 # Optional per-folder settings. They override the global ones above for this folder only.
 # enabled = true
 # after_upload = "keep"
@@ -238,10 +241,7 @@ impl Config {
                     fs::create_dir_all(dir)?;
                 }
                 fs::write(path, TEMPLATE)?;
-                bail!(
-                    "created a configuration template at {}, edit it and save",
-                    path.display()
-                );
+                bail!("{CHOOSE_HOST}");
             }
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
         };
@@ -257,7 +257,7 @@ impl Config {
     fn validate(&self) -> Result<()> {
         let destination = self.ssh.destination.trim();
         if destination.is_empty() {
-            bail!("ssh.destination must not be empty");
+            bail!("{CHOOSE_HOST}");
         }
         // A leading dash would be parsed by ssh as a command line option.
         if destination.starts_with('-') {
@@ -445,8 +445,20 @@ mod tests {
     "#;
 
     #[test]
-    fn template_is_valid() {
-        Config::parse(TEMPLATE).unwrap();
+    fn template_asks_for_the_host_and_is_valid_once_it_is_set() {
+        let error = Config::parse(TEMPLATE).unwrap_err().to_string();
+        assert!(error.contains("Choose the SSH host"), "{error}");
+        Config::parse(&configured()).unwrap();
+    }
+
+    /// The template with a host and the example folder, as after setting it up.
+    fn configured() -> String {
+        TEMPLATE
+            .replace(r#"destination = """#, r#"destination = "vps""#)
+            .replace(
+                "# [[mapping]]\n# local = \"D:/Downloads/outbox\"\n# remote = \"/data/videos\"",
+                "[[mapping]]\nlocal = \"D:/Downloads/outbox\"\nremote = \"/data/videos\"",
+            )
     }
 
     #[test]
@@ -507,7 +519,8 @@ mod tests {
             "port",
             "identity_file",
         ];
-        let enabled: Vec<&str> = TEMPLATE
+        let configured = configured();
+        let enabled: Vec<&str> = configured
             .lines()
             .map(|line| match line.strip_prefix("# ") {
                 Some(rest) if OPTIONAL.iter().any(|name| rest.starts_with(name)) => rest,
@@ -552,7 +565,7 @@ mod tests {
 
     #[test]
     fn adds_a_mapping_once() {
-        let (_dir, path) = temp_config(TEMPLATE);
+        let (_dir, path) = temp_config(&configured());
         let mut outcomes = Vec::new();
         for remote in ["/data/new", "/data/other"] {
             edit(&path, |doc| {
@@ -573,13 +586,13 @@ mod tests {
 
     #[test]
     fn an_invalid_edit_is_not_written() {
-        let (_dir, path) = temp_config(TEMPLATE);
+        let (_dir, path) = temp_config(&configured());
         let result = edit(&path, |doc| {
             add_mapping(doc, "D:/Videos", "relative/path").map(|_| ())
         });
 
         assert!(result.is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), TEMPLATE);
+        assert_eq!(fs::read_to_string(&path).unwrap(), configured());
     }
 
     #[test]
@@ -622,7 +635,7 @@ mod tests {
 
     #[test]
     fn lists_and_toggles_the_mappings() {
-        let (_dir, path) = temp_config(TEMPLATE);
+        let (_dir, path) = temp_config(&configured());
         edit(&path, |doc| {
             add_mapping(doc, "D:/Videos", "/data/new").map(|_| ())
         })

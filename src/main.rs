@@ -73,6 +73,7 @@ fn run() -> Result<()> {
     // released automatically when the process exits.
     let lock = File::create(data_dir.join("outbound.lock"))?;
     if lock.try_lock().is_err() {
+        dialog::info("Outbound is already running. Its icon is in the notification area.");
         return Ok(());
     }
     init_logging(&data_dir.join("outbound.log"))?;

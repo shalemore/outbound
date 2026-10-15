@@ -57,7 +57,7 @@ pub fn add_folder(commands: &Sender<Command>) {
     let ssh = match config::config_path().and_then(|path| Config::load(&path)) {
         Ok(config) => config.ssh,
         Err(e) => {
-            Notice::Error(format!("Choose the SSH host first. {e:#}")).show();
+            Notice::Error(format!("{e:#}")).show();
             return;
         }
     };
