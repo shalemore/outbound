@@ -90,16 +90,16 @@ impl Status {
         }
     }
 
-    /// The two rows at the top of the menu: what is going on, and the details of it. While a file
-    /// is being sent the details are its progress, otherwise they say what is pending and what was
-    /// uploaded.
-    pub fn headline(&self) -> [String; 2] {
+    /// The rows at the top of the menu: what is going on, and, when there is something to say, the
+    /// details of it. While a file is being sent the details are its progress, otherwise they are
+    /// what is pending and what was uploaded.
+    pub fn headline(&self) -> (String, Option<String>) {
         let details = if self.transfer.is_some() {
-            self.progress_line()
+            Some(self.progress_line())
         } else {
             self.counts_line()
         };
-        [self.state_line(), details]
+        (self.state_line(), details)
     }
 
     /// The title of the menu that lists the conflicts and the problems.
@@ -123,9 +123,8 @@ impl Status {
     }
 
     pub fn tooltip(&self) -> String {
-        let [state, details] = self.headline();
-        let mut text = state;
-        if self.transfer.is_some() || self.pending_files > 0 {
+        let (mut text, details) = self.headline();
+        if let Some(details) = details {
             text = format!("{text}\n{details}");
         }
         if self.needs_attention() {
@@ -170,12 +169,10 @@ impl Status {
         line
     }
 
-    /// What is waiting and what is done, on one row.
-    fn counts_line(&self) -> String {
+    /// What is waiting and what is done, on one row. None when there is nothing to say.
+    fn counts_line(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if self.pending_files == 0 {
-            parts.push("Nothing pending".to_string());
-        } else {
+        if self.pending_files > 0 {
             parts.push(format!(
                 "{} pending ({})",
                 self.pending_files,
@@ -192,7 +189,7 @@ impl Status {
                 human_bytes(self.done_bytes)
             ));
         }
-        parts.join(" · ")
+        (!parts.is_empty()).then(|| parts.join(" · "))
     }
 }
 
@@ -316,7 +313,7 @@ mod tests {
     #[test]
     fn describes_what_is_pending_and_what_is_done() {
         let mut status = Status::default();
-        assert_eq!(status.counts_line(), "Nothing pending");
+        assert_eq!(status.counts_line(), None);
 
         status.pending_files = 3;
         status.pending_bytes = 3 * 1024 * 1024;
@@ -324,26 +321,27 @@ mod tests {
         status.done_files = 1;
         status.done_bytes = 512;
         assert_eq!(
-            status.counts_line(),
-            "3 pending (3.0 MiB) · 1 still being written · 1 uploaded (512 B)"
+            status.counts_line().as_deref(),
+            Some("3 pending (3.0 MiB) · 1 still being written · 1 uploaded (512 B)")
         );
         status.pending_files = 0;
         status.waiting_files = 0;
-        assert_eq!(status.counts_line(), "Nothing pending · 1 uploaded (512 B)");
+        assert_eq!(status.counts_line().as_deref(), Some("1 uploaded (512 B)"));
     }
 
     #[test]
     fn the_headline_shows_the_progress_only_while_sending() {
         let mut status = Status::default();
-        assert_eq!(status.headline(), ["Idle", "Nothing pending"]);
+        assert_eq!(status.headline(), ("Idle".to_string(), None));
 
         let mut transfer = Transfer::new(Phase::Uploading, "a.mkv".into(), 200);
         transfer.done = 100;
         status.transfer = Some(transfer);
         status.queued = 5;
         status.finished = 1;
-        let [state, details] = status.headline();
+        let (state, details) = status.headline();
         assert_eq!(state, "Uploading 2 of 5 · a.mkv");
+        let details = details.unwrap();
         assert!(details.contains("50% · 100 B of 200 B"), "{details}");
     }
 

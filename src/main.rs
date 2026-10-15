@@ -163,8 +163,11 @@ fn run() -> Result<()> {
 
 struct Tray {
     icon: TrayIcon,
-    /// What is going on, and the details of it.
+    menu: Menu,
+    /// What is going on, and the details of it. The details are only in the menu while there is
+    /// something to say.
     headline: [MenuItem; 2],
+    details_shown: bool,
     /// Lists the conflicts and the problems. It is disabled while there are none.
     attention_menu: Submenu,
     /// The problems and the conflicts that are currently listed in the submenu.
@@ -210,6 +213,7 @@ impl Tray {
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
+        let menu_handle = menu.clone();
         for line in &headline {
             menu.append(line)?;
         }
@@ -232,7 +236,9 @@ impl Tray {
             .build()?;
         let mut tray = Self {
             icon,
+            menu: menu_handle,
             headline,
+            details_shown: true,
             attention_menu,
             attention: Default::default(),
             pause_resume,
@@ -314,8 +320,21 @@ impl Tray {
     fn refresh(&mut self, reporter: &Reporter) {
         let status = reporter.snapshot();
         // A menu that is open is not changed under the mouse: only what differs is touched.
-        for (item, text) in self.headline.iter().zip(status.headline()) {
-            set_text(item, text);
+        let (state, details) = status.headline();
+        set_text(&self.headline[0], state);
+        match details {
+            Some(details) => {
+                set_text(&self.headline[1], details);
+                if !self.details_shown {
+                    let _ = self.menu.insert(&self.headline[1], 1);
+                    self.details_shown = true;
+                }
+            }
+            None if self.details_shown => {
+                let _ = self.menu.remove(&self.headline[1]);
+                self.details_shown = false;
+            }
+            None => {}
         }
         self.refresh_attention(&status);
         set_text(
