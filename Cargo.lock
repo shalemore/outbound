@@ -1708,6 +1708,7 @@ dependencies = [
  "trash",
  "tray-icon",
  "walkdir",
+ "windows",
  "winreg",
  "winresource",
 ]

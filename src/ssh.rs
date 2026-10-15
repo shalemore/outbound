@@ -116,6 +116,33 @@ impl SshRemote {
         Ok(home.to_string())
     }
 
+    /// Looks at a folder path that is being typed: whether it is a folder, and which folders are
+    /// in the folder the path points into, or, for a path without a trailing slash, in its parent.
+    pub fn browse(&self, path: &str) -> Result<Browse> {
+        let listed = listed_folder(path);
+        let script = format!(
+            "if [ -d {} ]; then echo yes; else echo no; fi
+             ls -1Ap {} 2>/dev/null | sed -n 's|/$||p'
+",
+            sh_quote(path),
+            sh_quote(&listed)
+        );
+        let output = self.run_script(&script)?;
+        let mut lines = output.lines();
+        let exists = lines.next().map(str::trim) == Some("yes");
+        let mut folders: Vec<String> = lines
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(String::from)
+            .collect();
+        folders.sort_by_key(|name| name.to_lowercase());
+        Ok(Browse {
+            exists,
+            listed,
+            folders,
+        })
+    }
+
     fn partial_size(&self, temp: &str) -> Result<u64> {
         let temp = sh_quote(temp);
         let output = self.run_script(&format!(
@@ -371,6 +398,58 @@ fn parse_sha256(output: &str) -> Result<String> {
 }
 
 /// A login script may print extra text before the answer, so only the last line counts.
+/// What `SshRemote::browse` found.
+#[derive(Debug, PartialEq)]
+pub struct Browse {
+    /// The path is a folder on the remote.
+    pub exists: bool,
+    /// The folder whose content is listed, with no trailing slash except for the root.
+    pub listed: String,
+    /// The names of the folders in it.
+    pub folders: Vec<String>,
+}
+
+impl Browse {
+    /// The folders that fit the part typed after the last slash. Hidden folders are only offered
+    /// to someone who starts the name with a dot.
+    pub fn matching(&self, typed: &str) -> Vec<&str> {
+        self.folders
+            .iter()
+            .map(String::as_str)
+            .filter(|name| {
+                name.starts_with(typed) && (typed.starts_with('.') || !name.starts_with('.'))
+            })
+            .collect()
+    }
+
+    /// The path of one of the listed folders, ready to be typed on.
+    pub fn path_of(&self, name: &str) -> String {
+        match self.listed.as_str() {
+            "/" => format!("/{name}/"),
+            listed => format!("{listed}/{name}/"),
+        }
+    }
+
+    /// The folder above the listed one, None at the root.
+    pub fn parent_path(&self) -> Option<String> {
+        if self.listed == "/" {
+            return None;
+        }
+        let (parent, _) = self.listed.rsplit_once('/')?;
+        Some(format!("{parent}/"))
+    }
+}
+
+/// The folder that a typed path points into: the path itself when it ends with a slash, and
+/// otherwise the folder that holds the last part.
+fn listed_folder(path: &str) -> String {
+    let folder = match path.rsplit_once('/') {
+        Some((folder, _)) => folder,
+        None => "",
+    };
+    if folder.is_empty() { "/" } else { folder }.to_string()
+}
+
 fn last_line(output: &str) -> &str {
     output.lines().last().unwrap_or_default().trim()
 }
@@ -398,6 +477,46 @@ mod tests {
             cancel: &never,
             bytes_per_sec: None,
         }
+    }
+
+    #[test]
+    fn lists_the_folder_a_typed_path_points_into() {
+        assert_eq!(listed_folder("/data/vid"), "/data");
+        assert_eq!(listed_folder("/data/"), "/data");
+        assert_eq!(listed_folder("/data"), "/");
+        assert_eq!(listed_folder("/"), "/");
+        assert_eq!(listed_folder(""), "/");
+    }
+
+    #[test]
+    fn offers_the_folders_that_fit_what_is_typed() {
+        let browse = Browse {
+            exists: false,
+            listed: "/data".into(),
+            folders: vec![
+                ".cache".into(),
+                "movies".into(),
+                "music".into(),
+                "tv".into(),
+            ],
+        };
+        assert_eq!(browse.matching(""), ["movies", "music", "tv"]);
+        assert_eq!(browse.matching("mu"), ["music"]);
+        assert_eq!(browse.matching(".c"), [".cache"]);
+        assert_eq!(browse.path_of("tv"), "/data/tv/");
+        assert_eq!(browse.parent_path().as_deref(), Some("/"));
+
+        let root = Browse {
+            listed: "/".into(),
+            ..browse
+        };
+        assert_eq!(root.path_of("data"), "/data/");
+        assert_eq!(root.parent_path(), None);
+        let deep = Browse {
+            listed: "/data/tv".into(),
+            ..root
+        };
+        assert_eq!(deep.parent_path().as_deref(), Some("/data/"));
     }
 
     #[test]
@@ -693,6 +812,20 @@ exec sh -c \"$*\"\n";
         ));
         assert!(fx.remote.dir_exists(&format!("{}/sub", fx.root)).unwrap());
         assert!(!fx.remote.dir_exists(&file).unwrap());
+
+        let inside = fx.remote.browse(&format!("{}/", fx.root)).unwrap();
+        assert!(inside.exists);
+        assert_eq!(inside.folders, ["sub"]);
+        let typing = fx.remote.browse(&format!("{}/su", fx.root)).unwrap();
+        assert!(!typing.exists);
+        assert_eq!(typing.listed, fx.root);
+        assert_eq!(typing.folders, ["sub"]);
+        assert!(
+            !fx.remote
+                .browse(&format!("{}/nope/x", fx.root))
+                .unwrap()
+                .exists
+        );
         assert_eq!(
             fx.remote.sha256(&file).unwrap(),
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"

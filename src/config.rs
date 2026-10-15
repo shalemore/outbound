@@ -147,7 +147,7 @@ pub enum AfterUpload {
     Trash,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ssh {
     pub destination: String,

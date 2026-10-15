@@ -1,5 +1,11 @@
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
+use anyhow::Result;
+
+use crate::ssh::Browse;
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 
 const TITLE: &str = "Outbound";
@@ -10,9 +16,26 @@ pub fn pick_folder(description: &str) -> Option<PathBuf> {
     FileDialog::new().set_title(description).pick_folder()
 }
 
-/// Asks for a line of text, starting from `default`. None means the user cancelled.
-pub fn ask_text(message: &str, default: &str) -> Option<String> {
-    tinyfiledialogs::input_box(TITLE, message, default).filter(|text| !text.trim().is_empty())
+/// What the dialog for a remote folder asks the VPS about a typed path. It runs on a thread of
+/// its own.
+pub type Lookup = Arc<dyn Fn(&str) -> Result<Browse> + Send + Sync>;
+
+/// Asks for the folder on the VPS that receives `local`, starting from `initial`. None means the
+/// user cancelled.
+#[cfg(windows)]
+pub fn ask_remote_folder(local: &Path, initial: &str, lookup: Lookup) -> Option<String> {
+    crate::remote_dialog::ask(local, initial, lookup).filter(|text| !text.is_empty())
+}
+
+/// Other systems get a plain input box, without the check of the folder.
+#[cfg(not(windows))]
+pub fn ask_remote_folder(local: &Path, initial: &str, _lookup: Lookup) -> Option<String> {
+    let message = format!(
+        "Folder on the VPS that receives
+{}",
+        local.display()
+    );
+    tinyfiledialogs::input_box(TITLE, &message, initial).filter(|text| !text.trim().is_empty())
 }
 
 /// A yes or no question. Closing the dialog counts as no.

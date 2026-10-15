@@ -47,7 +47,7 @@ The executable is not code-signed. Windows SmartScreen may therefore show "Windo
 | SSH host | Lists the host aliases of `~/.ssh/config` (wildcard patterns are skipped). Choosing one writes it to `ssh.destination`. |
 | Folders | Lists the configured folders. A check mark turns a folder on or off. |
 | Folders → Remove folder | Asks, then takes the folder out of the configuration file. Nothing is deleted, neither locally nor on the VPS, and the files that were already sent stay where they are. |
-| Folders → Add folder mapping… | Pick the local folder in the system folder picker. outbound then asks the VPS for its home directory and shows an input box that suggests `<home>/<folder name>`. The folder must already exist on the VPS, which is checked over ssh before anything is written. |
+| Folders → Add folder mapping… | Pick the local folder in the system folder picker. outbound then asks the VPS for its home directory and asks for the folder on the VPS, starting from `<home>/<folder name>`. On Windows this is a native dialog that checks over ssh, while you type, that the folder exists, and lists the folders next to it, so that a path can also be clicked together; OK is only available for a folder that exists. Other systems get a plain input box, and the folder is checked before anything is written. |
 | Open configuration file / log folder | Opens them in the default program (Notepad for the configuration on Windows). |
 | Clean up and quit… | Removes what the program has put on this computer outside its own folders, checks that it is gone, and quits. See [Clean up](#clean-up). |
 

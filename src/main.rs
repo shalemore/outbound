@@ -8,6 +8,8 @@ mod hosts;
 mod icon;
 mod ledger;
 mod notifier;
+#[cfg(windows)]
+mod remote_dialog;
 mod ssh;
 mod status;
 mod sync;

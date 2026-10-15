@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::Sender,
+    sync::{Arc, mpsc::Sender},
     thread,
 };
 
@@ -89,8 +89,16 @@ pub fn ask_remote(
     proxy: &EventLoopProxy<UserEvent>,
     commands: &Sender<Command>,
 ) {
-    let message = format!("Folder on the VPS that receives\n{}", local.display());
-    let Some(answer) = dialog::ask_text(&message, &suggested_remote(home, &local)) else {
+    let ssh = match config::config_path().and_then(|path| Config::load(&path)) {
+        Ok(config) => config.ssh,
+        Err(e) => {
+            Notice::Error(format!("{e:#}")).show();
+            return;
+        }
+    };
+    let lookup = Arc::new(move |path: &str| SshRemote::new(&ssh).browse(path));
+    let Some(answer) = dialog::ask_remote_folder(&local, &suggested_remote(home, &local), lookup)
+    else {
         return;
     };
     let (proxy, commands) = (proxy.clone(), commands.clone());
