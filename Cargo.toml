@@ -2,7 +2,7 @@
 name = "outbound"
 version = "0.3.0"
 edition = "2024"
-description = "Tray app that mirrors new files from local folders to a VPS over ssh"
+description = "Tray app that moves files from local folders to a Linux server over ssh"
 license = "MIT"
 repository = "https://github.com/shalemore/outbound"
 readme = "README.md"
