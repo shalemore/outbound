@@ -28,7 +28,7 @@ Or download the portable `.exe` from [Releases](https://github.com/shalemore/out
 ## Quick start
 
 > [!IMPORTANT]
-> The server must run Linux and have `sha256sum`. macOS, BSD and Windows servers are not supported.
+> The server must run Linux. macOS, BSD and Windows servers are not supported.
 
 > [!NOTE]
 > outbound never asks for a password. Connect to the server once from a terminal first, to accept its host key.
