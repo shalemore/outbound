@@ -36,7 +36,7 @@ pub fn refresh() {
     if current(VALUE).is_some_and(|value| value != wanted)
         && let Err(e) = write(VALUE, &wanted)
     {
-        tracing::warn!("cannot update the startup entry: {e}");
+        log::warn!("cannot update the startup entry: {e}");
     }
 }
 

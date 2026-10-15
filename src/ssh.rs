@@ -283,10 +283,10 @@ impl SshRemote {
         }
         hash_prefix(file, existing, hasher, progress)?;
         if to_hex(&hasher.clone().finalize()) == self.sha256(temp)? {
-            tracing::info!("resuming an interrupted upload at {existing} of {expected_size} bytes");
+            log::info!("resuming an interrupted upload at {existing} of {expected_size} bytes");
             return Ok(existing);
         }
-        tracing::warn!("discarding a partial upload that does not match the local file");
+        log::warn!("discarding a partial upload that does not match the local file");
         *hasher = Sha256::new();
         file.rewind()?;
         Ok(0)

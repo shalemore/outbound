@@ -8,6 +8,7 @@ mod dialog;
 mod hosts;
 mod icon;
 mod ledger;
+mod logfile;
 mod notifier;
 mod remote_dialog;
 mod ssh;
@@ -17,7 +18,7 @@ mod watch;
 mod worker;
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     path::{Path, PathBuf},
     process,
     sync::{Arc, Mutex, mpsc},
@@ -39,8 +40,6 @@ use crate::{
     worker::{Command, Control},
 };
 
-const MAX_LOG_BYTES: u64 = 5 << 20;
-
 enum UserEvent {
     Refresh,
     Menu(MenuEvent),
@@ -61,7 +60,7 @@ fn main() {
         process::exit(if cleanup::run().is_clean() { 0 } else { 1 });
     }
     if let Err(e) = run() {
-        tracing::error!("exiting because of an unexpected error: {e:#}");
+        log::error!("exiting because of an unexpected error: {e:#}");
         process::exit(1);
     }
 }
@@ -76,7 +75,7 @@ fn run() -> Result<()> {
         dialog::info("Outbound is already running. Its icon is in the notification area.");
         return Ok(());
     }
-    init_logging(&data_dir.join("outbound.log"))?;
+    logfile::init(&data_dir.join("outbound.log"))?;
     autostart::refresh();
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -123,7 +122,7 @@ fn run() -> Result<()> {
             Event::NewEvents(StartCause::Init) => match Tray::new(&context.reporter) {
                 Ok(tray) => app = Some(tray),
                 Err(e) => {
-                    tracing::error!("cannot create the tray icon: {e:#}");
+                    log::error!("cannot create the tray icon: {e:#}");
                     *control_flow = ControlFlow::Exit;
                 }
             },
@@ -343,7 +342,7 @@ impl Tray {
                 Ok(icon) => {
                     let _ = self.icon.set_icon(Some(icon));
                 }
-                Err(e) => tracing::warn!("cannot draw the tray icon: {e:#}"),
+                Err(e) => log::warn!("cannot draw the tray icon: {e:#}"),
             }
         }
     }
@@ -482,7 +481,7 @@ fn clean_up_and_quit() -> bool {
 
 fn open(path: Result<PathBuf>) {
     if let Err(e) = path.and_then(|path| open_in_explorer_or_notepad(&path)) {
-        tracing::warn!("cannot open the file or folder: {e:#}");
+        log::warn!("cannot open the file or folder: {e:#}");
     }
 }
 
@@ -491,22 +490,5 @@ fn open(path: Result<PathBuf>) {
 fn open_in_explorer_or_notepad(path: &Path) -> Result<()> {
     let program = if path.is_dir() { "explorer" } else { "notepad" };
     process::Command::new(program).arg(path).spawn()?;
-    Ok(())
-}
-
-/// When the log grows past the limit it is truncated, so it cannot grow without bound.
-fn init_logging(path: &Path) -> Result<()> {
-    let mut options = OpenOptions::new();
-    options.create(true);
-    if fs::metadata(path).is_ok_and(|m| m.len() > MAX_LOG_BYTES) {
-        options.write(true).truncate(true);
-    } else {
-        options.append(true);
-    }
-    let file = options.open(path)?;
-    tracing_subscriber::fmt()
-        .with_writer(Mutex::new(file))
-        .with_ansi(false)
-        .init();
     Ok(())
 }

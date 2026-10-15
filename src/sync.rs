@@ -393,7 +393,7 @@ impl Engine<'_> {
             match self.process(key, candidate, ledger, conflicts) {
                 Err(e) if is_transient(&e) => {
                     let delay = backoff(self.config.retry_delay_secs, attempt);
-                    tracing::warn!(
+                    log::warn!(
                         "{}: {e:#}; trying again in {}s (attempt {} of {attempts})",
                         candidate.remote,
                         delay.as_secs(),
@@ -466,7 +466,7 @@ impl Engine<'_> {
                     &control,
                     &mut progress_callback(self.reporter),
                 )?;
-                tracing::info!(
+                log::info!(
                     "uploaded {} ({} bytes in {:.1}s)",
                     candidate.remote,
                     candidate.size,
@@ -475,14 +475,14 @@ impl Engine<'_> {
                 Handled::Uploaded
             }
             Decision::AlreadySynced => {
-                tracing::info!(
+                log::info!(
                     "the remote already has an identical file, skipping {}",
                     candidate.remote
                 );
                 Handled::AlreadySynced
             }
             Decision::Conflict(reason) => {
-                tracing::warn!("conflict at {}: {reason}", candidate.remote);
+                log::warn!("conflict at {}: {reason}", candidate.remote);
                 conflicts.insert(
                     key.to_string(),
                     Conflict {
@@ -502,7 +502,7 @@ impl Engine<'_> {
         if candidate.after_upload == AfterUpload::Trash {
             (self.trash)(&candidate.local)
                 .context("uploaded, but cannot move the local file to the trash")?;
-            tracing::info!("moved {} to the trash", candidate.local.display());
+            log::info!("moved {} to the trash", candidate.local.display());
             remove_empty_folders(&candidate.local, &candidate.root);
         } else {
             ledger.insert(key.to_string(), candidate.size, candidate.modified);
@@ -608,7 +608,7 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                tracing::warn!("skipping an inaccessible path: {e}");
+                log::warn!("skipping an inaccessible path: {e}");
                 continue;
             }
         };
@@ -628,7 +628,7 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
             continue;
         }
         let Some(relative) = relative_remote_path(&mapping.local, entry.path()) else {
-            tracing::warn!(
+            log::warn!(
                 "skipping a path that is not valid UTF-8: {}",
                 entry.path().display()
             );

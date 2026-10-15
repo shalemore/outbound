@@ -42,7 +42,7 @@ impl Watch {
         let watcher = match watcher {
             Ok(watcher) => Some(watcher),
             Err(e) => {
-                tracing::warn!("cannot watch folders, scanning only: {e}");
+                log::warn!("cannot watch folders, scanning only: {e}");
                 None
             }
         };
@@ -81,7 +81,7 @@ impl Watch {
                 Ok(()) => {
                     self.folders.insert(folder.clone());
                 }
-                Err(e) => tracing::warn!("cannot watch {}: {e}", folder.display()),
+                Err(e) => log::warn!("cannot watch {}: {e}", folder.display()),
             }
         }
     }

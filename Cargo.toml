@@ -16,8 +16,6 @@ tao = "0.37.1"
 tauri-winrt-notification = "0.8.1"
 toml = "1.1.8"
 toml_edit = "0.25.17"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 trash = "5.2.9"
 tray-icon = "0.26.1"
 walkdir = "2.5.0"
@@ -27,12 +25,14 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Com",
     "Win32_UI_Controls",
     "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 notify = { version = "8.2.0", default-features = false }
+log = "0.4.34"
 
 [dev-dependencies]
 tempfile = "3.27.0"

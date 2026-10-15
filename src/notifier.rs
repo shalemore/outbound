@@ -22,7 +22,7 @@ pub fn send(title: &str, body: &str) {
 
     let body: String = body.chars().take(MAX_BODY_CHARS).collect();
     if let Err(e) = Toast::new(APP_ID).title(title).text1(&body).show() {
-        tracing::warn!("cannot show a notification: {e}");
+        log::warn!("cannot show a notification: {e}");
     }
 }
 
@@ -75,7 +75,7 @@ mod registration {
         REGISTERED.call_once(|| {
             let icon = icon_path().and_then(|path| write_icon(&path).ok().map(|()| path));
             if let Err(e) = register(app_id, display_name, icon.as_deref()) {
-                tracing::warn!("cannot register the notification name: {e}");
+                log::warn!("cannot register the notification name: {e}");
             }
         });
     }

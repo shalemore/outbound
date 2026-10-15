@@ -8,7 +8,7 @@ pub fn ssh_hosts() -> Vec<String> {
     match path.map(fs::read_to_string) {
         Some(Ok(text)) => aliases(&text),
         Some(Err(e)) => {
-            tracing::info!("no ssh hosts could be read from ~/.ssh/config: {e}");
+            log::info!("no ssh hosts could be read from ~/.ssh/config: {e}");
             Vec::new()
         }
         None => Vec::new(),

@@ -272,7 +272,7 @@ impl Reporter {
             .cloned()
             .collect();
         for problem in &new {
-            tracing::error!("{problem}");
+            log::error!("{problem}");
         }
         self.update(|status| status.problems = problems);
         new
