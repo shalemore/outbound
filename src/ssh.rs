@@ -571,6 +571,33 @@ impl Browse {
         let (parent, _) = self.listed.rsplit_once('/')?;
         Some(format!("{parent}/"))
     }
+
+    /// What Tab makes of a typed path, as in a shell: the only folder that fits, or as much of the
+    /// name as all the folders that fit share. None when it adds nothing, or when the path no
+    /// longer points into the listed folder.
+    pub fn complete(&self, typed: &str) -> Option<String> {
+        if listed_folder(typed) != self.listed {
+            return None;
+        }
+        let name = typed.rsplit('/').next().unwrap_or_default();
+        match self.matching(name).as_slice() {
+            [] => None,
+            [only] => Some(self.path_of(only)),
+            [first, rest @ ..] => {
+                let shared = rest.iter().fold(first.len(), |shared, other| {
+                    first
+                        .char_indices()
+                        .zip(other.chars())
+                        .take_while(|((_, a), b)| a == b)
+                        .last()
+                        .map_or(0, |((at, c), _)| at + c.len_utf8())
+                        .min(shared)
+                });
+                (shared > name.len())
+                    .then(|| format!("{}{}", &typed[..typed.len() - name.len()], &first[..shared]))
+            }
+        }
+    }
 }
 
 /// The folder that a typed path points into: the path itself when it ends with a slash, and
@@ -650,6 +677,47 @@ mod tests {
             ..root
         };
         assert_eq!(deep.parent_path().as_deref(), Some("/data/"));
+    }
+
+    #[test]
+    fn tab_completes_like_a_shell() {
+        let browse = Browse {
+            exists: false,
+            listed: "/data".into(),
+            folders: vec![
+                "movies".into(),
+                "music".into(),
+                "tv".into(),
+                "téléfilms".into(),
+            ],
+        };
+        assert_eq!(
+            browse.complete("/data/t").as_deref(),
+            None,
+            "tv and téléfilms share only t"
+        );
+        assert_eq!(browse.complete("/data/tv").as_deref(), Some("/data/tv/"));
+        assert_eq!(
+            browse.complete("/data/mo").as_deref(),
+            Some("/data/movies/")
+        );
+        assert_eq!(
+            browse.complete("/data/m").as_deref(),
+            None,
+            "movies and music share only m"
+        );
+        assert_eq!(
+            browse.complete("/data/té").as_deref(),
+            Some("/data/téléfilms/")
+        );
+        assert_eq!(browse.complete("/data/x").as_deref(), None);
+        assert_eq!(browse.complete("/other/m").as_deref(), None);
+
+        let shared = Browse {
+            folders: vec!["season 1".into(), "season 2".into()],
+            ..browse
+        };
+        assert_eq!(shared.complete("/data/s").as_deref(), Some("/data/season "));
     }
 
     /// Talks to a real server through one session. Run it with the ssh destination in

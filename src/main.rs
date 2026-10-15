@@ -26,7 +26,7 @@ use std::{
 use anyhow::Result;
 use tao::{
     event::{Event, StartCause},
-    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
+    event_loop::{ControlFlow, EventLoopBuilder},
 };
 use tray_icon::{
     TrayIcon, TrayIconBuilder,
@@ -44,22 +44,12 @@ const MAX_LOG_BYTES: u64 = 5 << 20;
 enum UserEvent {
     Refresh,
     Menu(MenuEvent),
-    /// The local folder is chosen and the remote home is known: ask for the remote folder.
-    AskRemote {
-        local: PathBuf,
-        home: String,
-    },
-    Notice(Notice),
-    Notify {
-        title: String,
-        body: String,
-    },
+    Notify { title: String, body: String },
 }
 
 /// What the menu handlers need to reach the rest of the program.
 struct Context {
     commands: mpsc::Sender<Command>,
-    proxy: EventLoopProxy<UserEvent>,
     control: Arc<Control>,
     reporter: Reporter,
 }
@@ -122,7 +112,6 @@ fn run() -> Result<()> {
 
     let context = Context {
         commands,
-        proxy: event_loop.create_proxy(),
         control,
         reporter,
     };
@@ -147,16 +136,6 @@ fn run() -> Result<()> {
                     && tray.handle_menu(&event.id, &context)
                 {
                     *control_flow = ControlFlow::Exit;
-                }
-            }
-            Event::UserEvent(UserEvent::AskRemote { local, home }) => {
-                actions::ask_remote(local, &home, &context.proxy, &context.commands);
-            }
-            Event::UserEvent(UserEvent::Notice(notice)) => {
-                notice.show();
-                // The folder that was just added shows up in the menu.
-                if let Some(tray) = &mut app {
-                    tray.load_lists();
                 }
             }
             Event::UserEvent(UserEvent::Notify { title, body }) => notifier::send(&title, &body),
@@ -444,7 +423,8 @@ impl Tray {
                 self.load_lists();
             }
         } else if id == self.add_mapping.id() {
-            actions::start_add_mapping(&context.proxy);
+            actions::add_folder(&context.commands);
+            self.load_lists();
         } else if id == self.autostart.id() {
             // The item has already toggled itself, so its state is the one that was asked for.
             if let Err(e) = autostart::set(self.autostart.is_checked()) {

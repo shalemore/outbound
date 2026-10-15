@@ -1,6 +1,5 @@
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
-use anyhow::Result;
 use windows::{
     Win32::{
         System::Com::{
@@ -23,12 +22,6 @@ use windows::{
     },
     core::{HSTRING, PCWSTR, w},
 };
-
-use crate::ssh::Browse;
-
-/// What the dialog for a remote folder asks the VPS about a typed path. It runs on a thread of
-/// its own.
-pub type Lookup = Arc<dyn Fn(&str) -> Result<Browse> + Send + Sync>;
 
 /// Shows the system folder picker. None means the user cancelled. These functions block, so they
 /// are called from the thread that runs the event loop.
@@ -56,12 +49,6 @@ pub fn pick_folder(title: &str) -> Option<PathBuf> {
         CoTaskMemFree(Some(name.0.cast()));
         path
     }
-}
-
-/// Asks for the folder on the VPS that receives `local`, starting from `initial`. None means the
-/// user cancelled.
-pub fn ask_remote_folder(local: &std::path::Path, initial: &str, lookup: Lookup) -> Option<String> {
-    crate::remote_dialog::ask(local, initial, lookup).filter(|text| !text.is_empty())
 }
 
 /// A question with a heading and a smaller explanation below it. The button that does it is

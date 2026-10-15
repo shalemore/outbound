@@ -1,7 +1,8 @@
-//! The window that asks for a folder on the VPS. It is a plain Win32 window with the controls and
-//! the font of the system, so that it looks like the rest of Windows. While the path is typed it
-//! checks over ssh that the folder exists, and it lists the folders in the folder being typed in,
-//! so that a path can also be clicked together.
+//! The window that asks for a folder on the server. It is a plain Win32 window with the controls
+//! and the font of the system, so that it looks like the rest of Windows. It opens at once and
+//! suggests the home folder plus the name of the local folder when the server has answered. While
+//! the path is typed it checks that the folder exists, Tab completes a name as in a shell, and the
+//! list shows the folders next to it, so that a path can also be clicked together.
 
 use std::{ffi::c_void, mem, path::Path, sync::Arc, thread};
 
@@ -14,8 +15,8 @@ use windows::{
         UI::{
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi},
             Input::KeyboardAndMouse::{
-                EnableWindow, GetKeyState, IsWindowEnabled, SetFocus, VK_ESCAPE, VK_LBUTTON,
-                VK_RETURN,
+                EnableWindow, GetKeyState, IsWindowEnabled, SetFocus, VK_DOWN, VK_ESCAPE,
+                VK_LBUTTON, VK_RETURN, VK_SHIFT, VK_TAB,
             },
             WindowsAndMessaging::*,
         },
@@ -23,7 +24,23 @@ use windows::{
     core::{PCWSTR, w},
 };
 
-use crate::{dialog::Lookup, ssh::Browse};
+use crate::ssh::{Browse, SshRemote};
+
+/// What the dialog needs to know from the server. Every call runs on a thread of its own.
+pub trait Folders: Send + Sync {
+    fn home(&self) -> Result<String>;
+    fn browse(&self, path: &str) -> Result<Browse>;
+}
+
+impl Folders for SshRemote {
+    fn home(&self) -> Result<String> {
+        self.home_dir()
+    }
+
+    fn browse(&self, path: &str) -> Result<Browse> {
+        SshRemote::browse(self, path)
+    }
+}
 
 /// Window styles and messages of the controls, which live in a part of the Windows API that this
 /// program has no other use for.
@@ -38,20 +55,20 @@ const ID_OK: i32 = 1;
 const ID_CANCEL: i32 = 2;
 
 const TIMER_LOOKUP: usize = 1;
-/// How long the typing has to pause before the VPS is asked, so that not every key press makes
-/// an ssh connection.
-const LOOKUP_DELAY_MS: u32 = 400;
-/// An answer from the thread that asked the VPS. `wparam` is the number of the question and
-/// `lparam` a boxed `Answer`.
+/// How long the typing has to pause before the server is asked.
+const LOOKUP_DELAY_MS: u32 = 250;
+/// An answer about a path. `wparam` is the number of the question and `lparam` a boxed
+/// `Result<Browse>`.
 const WM_ANSWER: u32 = WM_APP + 1;
-
-struct Answer(Result<Browse>);
+/// The home folder of the server. `lparam` is a boxed `Result<String>`.
+const WM_HOME: u32 = WM_APP + 2;
 
 /// Everything the window procedure needs; the window keeps it behind GWLP_USERDATA.
 struct State {
-    lookup: Lookup,
+    folders: Arc<dyn Folders>,
     local: String,
-    initial: String,
+    /// The name of the local folder, which the suggestion ends with.
+    name: String,
     font: HFONT,
     edit: HWND,
     status: HWND,
@@ -60,18 +77,21 @@ struct State {
     ok: HWND,
     /// The number of the latest question. An answer to an earlier one is out of date.
     question: usize,
-    /// The folders that are in the list, and what the user picked, in the order of the list.
+    /// The latest answer, and the paths that the rows of the list open.
     browse: Option<Browse>,
     choices: Vec<String>,
     result: Option<String>,
 }
 
-/// Asks for the remote folder that receives `local`. None means that the user cancelled.
-pub fn ask(local: &Path, initial: &str, lookup: Lookup) -> Option<String> {
+/// Asks for the folder on the server that receives `local`. None means that the user cancelled.
+pub fn ask(local: &Path, folders: Arc<dyn Folders>) -> Option<String> {
     let mut state = Box::new(State {
-        lookup,
+        folders,
         local: local.display().to_string(),
-        initial: initial.to_string(),
+        name: local
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         font: HFONT::default(),
         edit: HWND::default(),
         status: HWND::default(),
@@ -83,18 +103,20 @@ pub fn ask(local: &Path, initial: &str, lookup: Lookup) -> Option<String> {
         choices: Vec::new(),
         result: None,
     });
-    // SAFETY: the window and its message loop live inside this call, and `state` outlives them.
-    unsafe { run(&mut state) };
-    if !state.font.is_invalid() {
-        // SAFETY: the font was made by this dialog and no control is left that uses it.
-        unsafe {
+    let state: *mut State = &mut *state as *mut State;
+    // SAFETY: the window and its message loop live inside this call, and the state outlives
+    // them. The state is only reached through the pointer from here on.
+    unsafe {
+        run(state);
+        let state = Box::from_raw(state);
+        if !state.font.is_invalid() {
             let _ = DeleteObject(HGDIOBJ(state.font.0));
         }
+        state.result.filter(|text| !text.is_empty())
     }
-    state.result
 }
 
-unsafe fn run(state: &mut State) {
+unsafe fn run(state: *mut State) {
     unsafe {
         let Ok(module) = GetModuleHandleW(None) else {
             return;
@@ -124,27 +146,19 @@ unsafe fn run(state: &mut State) {
             None,
             None,
             Some(module.into()),
-            Some(state as *mut State as *const c_void),
+            Some(state as *const c_void),
         ) else {
             return;
         };
+        let (edit, list) = ((*state).edit, (*state).list);
         let _ = ShowWindow(window, SW_SHOW);
         let _ = SetForegroundWindow(window);
-        let _ = SetFocus(Some(state.edit));
+        let _ = SetFocus(Some(edit));
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
-            let typing_target = message.hwnd == state.edit || message.hwnd == state.list;
-            if message.message == WM_KEYDOWN && typing_target {
-                let key = message.wParam.0 as u16;
-                if key == VK_RETURN.0 {
-                    SendMessageW(window, WM_COMMAND, Some(WPARAM(ID_OK as usize)), None);
-                    continue;
-                }
-                if key == VK_ESCAPE.0 {
-                    SendMessageW(window, WM_COMMAND, Some(WPARAM(ID_CANCEL as usize)), None);
-                    continue;
-                }
+            if message.message == WM_KEYDOWN && key(&*state, window, &message, edit, list) {
+                continue;
             }
             if !IsDialogMessageW(window, &message).as_bool() {
                 let _ = TranslateMessage(&message);
@@ -152,6 +166,72 @@ unsafe fn run(state: &mut State) {
             }
         }
         let _ = UnregisterClassW(class, Some(module.into()));
+    }
+}
+
+/// The keys that do something special in the box and in the list. Returns true when the key was
+/// used up.
+unsafe fn key(state: &State, window: HWND, message: &MSG, edit: HWND, list: HWND) -> bool {
+    let key = message.wParam.0 as u16;
+    let command = |id: i32| unsafe {
+        SendMessageW(window, WM_COMMAND, Some(WPARAM(id as usize)), None);
+        true
+    };
+    unsafe {
+        match (message.hwnd == edit, message.hwnd == list) {
+            (true, _) if key == VK_RETURN.0 => command(ID_OK),
+            (_, true) if key == VK_RETURN.0 => open_selected(state, edit, list),
+            (true, _) | (_, true) if key == VK_ESCAPE.0 => command(ID_CANCEL),
+            (true, _) if key == VK_TAB.0 && GetKeyState(VK_SHIFT.0 as i32) >= 0 => {
+                // Without anything to complete, Tab moves on to the next control as usual.
+                let completed = state
+                    .browse
+                    .as_ref()
+                    .and_then(|browse| browse.complete(&text_of(edit)));
+                match completed {
+                    Some(path) => {
+                        put_path(edit, &path);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            (true, _) if key == VK_DOWN.0 && !state.choices.is_empty() => {
+                SendMessageW(list, LB_SETCURSEL, Some(WPARAM(0)), None);
+                let _ = SetFocus(Some(list));
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Puts the path of the selected row into the box, which lists that folder next.
+unsafe fn open_selected(state: &State, edit: HWND, list: HWND) -> bool {
+    unsafe {
+        let index = SendMessageW(list, LB_GETCURSEL, None, None).0;
+        if let Some(path) = usize::try_from(index)
+            .ok()
+            .and_then(|index| state.choices.get(index))
+        {
+            put_path(edit, path);
+            let _ = SetFocus(Some(edit));
+        }
+        true
+    }
+}
+
+/// Replaces the text of the box and puts the caret at its end.
+unsafe fn put_path(edit: HWND, path: &str) {
+    unsafe {
+        set_text(edit, path);
+        let end = path.encode_utf16().count();
+        SendMessageW(
+            edit,
+            EM_SETSEL,
+            Some(WPARAM(end)),
+            Some(LPARAM(end as isize)),
+        );
     }
 }
 
@@ -178,6 +258,7 @@ unsafe extern "system" fn window_proc(
                 SetWindowLongPtrW(window, GWLP_USERDATA, create.lpCreateParams as isize);
                 if let Some(state) = state_of(window) {
                     build(window, state);
+                    ask_for_home(window, state);
                 }
                 LRESULT(0)
             }
@@ -190,17 +271,25 @@ unsafe extern "system" fn window_proc(
             WM_TIMER if wparam.0 == TIMER_LOOKUP => {
                 let _ = KillTimer(Some(window), TIMER_LOOKUP);
                 if let Some(state) = state_of(window) {
-                    ask_the_vps(window, state);
+                    ask_about_path(window, state);
+                }
+                LRESULT(0)
+            }
+            WM_HOME => {
+                // The box is always taken back.
+                let home = *Box::from_raw(lparam.0 as *mut Result<String>);
+                if let Some(state) = state_of(window) {
+                    show_home(state, home);
                 }
                 LRESULT(0)
             }
             WM_ANSWER => {
                 // The box is always taken back, also when the answer is out of date.
-                let answer = Box::from_raw(lparam.0 as *mut Answer);
+                let answer = *Box::from_raw(lparam.0 as *mut Result<Browse>);
                 if let Some(state) = state_of(window)
                     && wparam.0 == state.question
                 {
-                    show_answer(state, answer.0);
+                    show_answer(state, answer);
                 }
                 LRESULT(0)
             }
@@ -272,7 +361,7 @@ unsafe fn build(window: HWND, state: &mut State) {
         let ellipsis = WINDOW_STYLE(SS_PATHELLIPSIS);
         child(
             w!("STATIC"),
-            &format!("Folder on the VPS that receives {}", state.local),
+            &format!("Folder on the server for {}", state.local),
             0,
             ellipsis,
             none,
@@ -280,7 +369,7 @@ unsafe fn build(window: HWND, state: &mut State) {
         );
         state.edit = child(
             w!("EDIT"),
-            &state.initial,
+            "",
             ID_EDIT,
             WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
             WS_EX_CLIENTEDGE,
@@ -288,7 +377,7 @@ unsafe fn build(window: HWND, state: &mut State) {
         );
         state.status = child(
             w!("STATIC"),
-            "Checking…",
+            "Connecting…",
             ID_STATUS,
             ellipsis,
             none,
@@ -309,6 +398,14 @@ unsafe fn build(window: HWND, state: &mut State) {
             WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(LBS_NOTIFY as u32 | LBS_NOINTEGRALHEIGHT as u32),
             WS_EX_CLIENTEDGE,
             (16, 120, 408, 120),
+        );
+        child(
+            w!("STATIC"),
+            "Tab completes a name.",
+            0,
+            WINDOW_STYLE(0),
+            none,
+            (16, 261, 216, 18),
         );
         state.ok = child(
             w!("BUTTON"),
@@ -353,9 +450,6 @@ unsafe fn build(window: HWND, state: &mut State) {
             height,
             SWP_NOZORDER,
         );
-
-        // Ask about the folder that is already in the box, without waiting for typing.
-        let _ = SetTimer(Some(window), TIMER_LOOKUP, 10, None);
     }
 }
 
@@ -371,27 +465,14 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
                 set_text(state.status, "Checking…");
                 let _ = SetTimer(Some(window), TIMER_LOOKUP, LOOKUP_DELAY_MS, None);
             }
+            ID_LIST if notification == LBN_DBLCLK => {
+                open_selected(state, state.edit, HWND(lparam.0 as *mut c_void));
+            }
             ID_LIST if notification == LBN_SELCHANGE => {
                 // Arrow keys also change the selection, and they only browse. A click opens the
                 // folder.
                 if GetKeyState(VK_LBUTTON.0 as i32) < 0 {
-                    let index =
-                        SendMessageW(HWND(lparam.0 as *mut c_void), LB_GETCURSEL, None, None).0;
-                    if let Some(path) = usize::try_from(index)
-                        .ok()
-                        .and_then(|index| state.choices.get(index))
-                    {
-                        let path = path.clone();
-                        set_text(state.edit, &path);
-                        let end = path.encode_utf16().count();
-                        SendMessageW(
-                            state.edit,
-                            EM_SETSEL,
-                            Some(WPARAM(end)),
-                            Some(LPARAM(end as isize)),
-                        );
-                        let _ = SetFocus(Some(state.edit));
-                    }
+                    open_selected(state, state.edit, HWND(lparam.0 as *mut c_void));
                 }
             }
             ID_OK => {
@@ -408,19 +489,22 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
     }
 }
 
-/// Asks the VPS about the text in the box, on a thread of its own, and gets the answer as a
-/// message.
-unsafe fn ask_the_vps(window: HWND, state: &mut State) {
-    let text = unsafe { text_of(state.edit) };
-    let (question, lookup, window) = (state.question, Arc::clone(&state.lookup), window.0 as isize);
+/// Runs `ask` on a thread of its own and posts the boxed answer to the window as `message`.
+fn post_answer<T: Send + 'static>(
+    window: HWND,
+    message: u32,
+    wparam: usize,
+    ask: impl FnOnce() -> T + Send + 'static,
+) {
+    let window = window.0 as isize;
     thread::spawn(move || {
-        let answer = Box::into_raw(Box::new(Answer(lookup(text.trim()))));
+        let answer = Box::into_raw(Box::new(ask()));
         // SAFETY: only a message is posted. When the window is gone, the box is taken back here.
         unsafe {
             let posted = PostMessageW(
                 Some(HWND(window as *mut c_void)),
-                WM_ANSWER,
-                WPARAM(question),
+                message,
+                WPARAM(wparam),
                 LPARAM(answer as isize),
             );
             if posted.is_err() {
@@ -428,6 +512,37 @@ unsafe fn ask_the_vps(window: HWND, state: &mut State) {
             }
         }
     });
+}
+
+fn ask_for_home(window: HWND, state: &State) {
+    let folders = Arc::clone(&state.folders);
+    post_answer(window, WM_HOME, 0, move || folders.home());
+}
+
+unsafe fn ask_about_path(window: HWND, state: &State) {
+    let text = unsafe { text_of(state.edit) };
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return;
+    }
+    let folders = Arc::clone(&state.folders);
+    post_answer(window, WM_ANSWER, state.question, move || {
+        folders.browse(&text)
+    });
+}
+
+/// Suggests the home folder plus the name of the local folder, unless something was typed while
+/// the server was being reached.
+fn show_home(state: &mut State, home: Result<String>) {
+    unsafe {
+        match home {
+            Ok(home) if text_of(state.edit).is_empty() => {
+                put_path(state.edit, &suggested(&home, &state.name));
+            }
+            Ok(_) => {}
+            Err(e) => set_text(state.status, &format!("Cannot reach the server: {e:#}")),
+        }
+    }
 }
 
 fn show_answer(state: &mut State, answer: Result<Browse>) {
@@ -447,7 +562,7 @@ fn show_answer(state: &mut State, answer: Result<Browse>) {
             if browse.exists {
                 "The folder exists."
             } else {
-                "This folder does not exist on the VPS."
+                "This folder does not exist on the server."
             },
         );
         let _ = EnableWindow(state.ok, browse.exists);
@@ -475,6 +590,16 @@ fn show_answer(state: &mut State, answer: Result<Browse>) {
     }
 }
 
+/// The home folder of the server plus the name of the local folder.
+fn suggested(home: &str, name: &str) -> String {
+    let home = home.trim_end_matches('/');
+    if name.is_empty() {
+        format!("{home}/")
+    } else {
+        format!("{home}/{name}")
+    }
+}
+
 unsafe fn set_text(control: HWND, text: &str) {
     let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     unsafe {
@@ -497,21 +622,40 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn suggests_home_plus_the_folder_name() {
+        assert_eq!(suggested("/home/me", "outbox"), "/home/me/outbox");
+        assert_eq!(suggested("/root/", "x"), "/root/x");
+        assert_eq!(suggested("/root", ""), "/root/");
+    }
+
+    /// Made-up answers from a server whose home is /data.
+    struct Fake;
+
+    impl Folders for Fake {
+        fn home(&self) -> Result<String> {
+            thread::sleep(Duration::from_millis(500));
+            Ok("/data".into())
+        }
+
+        fn browse(&self, path: &str) -> Result<Browse> {
+            thread::sleep(Duration::from_millis(100));
+            let listed = path.rsplit_once('/').map_or("/", |(folder, _)| folder);
+            Ok(Browse {
+                exists: ["/data", "/data/videos", "/data/music"]
+                    .contains(&path.trim_end_matches('/')),
+                listed: if listed.is_empty() { "/" } else { listed }.into(),
+                folders: ["videos", "music", "tv", ".cache"].map(String::from).into(),
+            })
+        }
+    }
+
     /// Opens the dialog with made-up answers, to look at it. Run it with
     /// `cargo test --release show_the_dialog -- --ignored`.
     #[test]
     #[ignore]
     fn show_the_dialog() {
-        let lookup: Lookup = Arc::new(|path| {
-            thread::sleep(Duration::from_millis(300));
-            let listed = path.rsplit_once('/').map_or("/", |(folder, _)| folder);
-            Ok(Browse {
-                exists: path.trim_end_matches('/') == "/data/videos" || path == "/data/",
-                listed: if listed.is_empty() { "/" } else { listed }.into(),
-                folders: ["videos", "music", "tv", ".cache"].map(String::from).into(),
-            })
-        });
-        let answer = ask(Path::new(r"D:\Downloads\outbox"), "/data/videos", lookup);
+        let answer = ask(Path::new(r"D:\Downloads\outbox"), Arc::new(Fake));
         eprintln!("answer: {answer:?}");
     }
 }
