@@ -197,16 +197,16 @@ impl Tray {
         let headline = [(); 2].map(|()| MenuItem::new("", false, None));
         let attention_menu = Submenu::new("Problems", false);
         let pause_resume = MenuItem::new("Pause", true, None);
-        let sync_now = MenuItem::new("Sync", true, None);
-        let host_menu = Submenu::new("Host", true);
-        let reload_hosts = MenuItem::new("Reload", true, None);
+        let sync_now = MenuItem::new("Sync now", true, None);
+        let host_menu = Submenu::new("SSH host", true);
+        let reload_hosts = MenuItem::new("Reload hosts", true, None);
         let folder_menu = Submenu::new("Folders", true);
-        let reload_folders = MenuItem::new("Reload", true, None);
-        let remove_menu = Submenu::new("Remove", false);
-        let add_mapping = MenuItem::new("Add…", true, None);
-        let open_config = MenuItem::new("Config", true, None);
-        let open_logs = MenuItem::new("Logs", true, None);
-        let clean_up = MenuItem::new("Cleanup", true, None);
+        let reload_folders = MenuItem::new("Reload folders", true, None);
+        let remove_menu = Submenu::new("Remove folder", false);
+        let add_mapping = MenuItem::new("Add folder…", true, None);
+        let open_config = MenuItem::new("Open config file", true, None);
+        let open_logs = MenuItem::new("Open log folder", true, None);
+        let clean_up = MenuItem::new("Clean up and quit", true, None);
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
@@ -277,8 +277,8 @@ impl Tray {
         let _ = self.host_menu.append(&PredefinedMenuItem::separator());
         let _ = self.host_menu.append(&self.reload_hosts);
         let title = match current {
-            Some(destination) => format!("Host: {destination}"),
-            None => "Host".to_string(),
+            Some(destination) => format!("SSH host: {destination}"),
+            None => "SSH host".to_string(),
         };
         self.host_menu.set_text(title);
 
@@ -445,7 +445,7 @@ fn clean_up_and_quit() -> bool {
     if !dialog::confirm(
         "Remove the notification entries and quit?",
         "Do this before you delete the program. Your configuration and log are kept.",
-        "Cleanup",
+        "Clean up",
     ) {
         return false;
     }

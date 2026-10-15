@@ -45,7 +45,7 @@ impl Control {
     }
 }
 
-/// Background thread: syncs one cycle every interval. "Sync" starts the next cycle at once
+/// Background thread: syncs one cycle every interval. "Sync now" starts the next cycle at once
 /// and makes earlier conflicts be compared again. While paused it does nothing until it is woken.
 pub fn spawn(
     reporter: Reporter,
