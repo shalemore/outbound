@@ -742,6 +742,32 @@ mod tests {
                 browse.folders.len()
             );
         }
+
+        // An upload into a folder that is created for it in /tmp, and removed again.
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("file.bin");
+        let data = patterned(CHUNK_SIZE * 3 + 77);
+        std::fs::write(&local, &data).unwrap();
+        let folder = format!("/tmp/outbound-test-{}", std::process::id());
+        let destination = format!("{folder}/sub/file.bin");
+        let size = data.len() as u64;
+        let started = Instant::now();
+        remote
+            .upload(&local, &destination, size, &free(), &mut |_| {})
+            .unwrap();
+        eprintln!("upload of {size} bytes: {:?}", started.elapsed());
+        assert!(matches!(
+            remote.stat(&destination).unwrap(),
+            RemoteEntry::File { size: found } if found == size
+        ));
+        assert_eq!(
+            remote.sha256(&destination).unwrap(),
+            to_hex(&Sha256::digest(&data))
+        );
+        remote
+            .run_script(&format!("rm -rf -- {}\n", sh_quote(&folder)))
+            .unwrap();
+        assert!(!remote.dir_exists(&folder).unwrap());
     }
 
     #[test]
