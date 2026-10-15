@@ -8,11 +8,11 @@
 
 A Windows tray app that mirrors **new** files from local folders to a folder on a Linux server over ssh.
 
-- **Nothing to install on the server.** It runs the system `ssh`, so keys, ssh-agent, `~/.ssh/config` and ProxyJump work as in a terminal.
-- **Verified.** A file goes to a temporary `.part` file, is checked with sha256, and is renamed only then.
-- **Resumable.** After a dropped connection or a pause, the upload continues from the verified part. Failures are retried with a growing wait.
-- **Never overwrites.** A file that already exists on the remote with different content is reported as a conflict and skipped.
-- **Status in the tray.** A strip on the icon is the progress bar; its color is the state (teal idle, blue syncing, amber conflicts, red problems, gray paused).
+- **Agentless.** Uses your system `ssh`, so nothing is installed on the server.
+- **Verified.** Every upload is checked with sha256 before it appears.
+- **Resumable.** An interrupted upload continues where it stopped, and failures are retried.
+- **Never overwrites.** A different file with the same name is a conflict, not a replacement.
+- **Tray status.** The icon shows the progress and the state.
 
 ## Install
 
@@ -41,7 +41,8 @@ Run `outbound`. The first run writes a configuration template and lists it as a 
 
 ## Tray menu
 
-- **Status.** What is going on, the progress, how many files are pending and uploaded. Conflicts and problems are in a submenu.
+- **Icon.** The strip is the progress bar. The color is the state: teal idle, blue syncing, amber conflicts, red problems, gray paused.
+- **Status.** What is going on, and how many files are pending and uploaded. Conflicts and problems are in a submenu.
 - **Pause / Resume** and **Sync now.** A pause stops the work at once and is not remembered after a restart.
 - **SSH host.** Writes the chosen alias to `ssh.destination`.
 - **Folders.** Tick a folder to turn it on or off. **Add folder mapping…** checks over ssh, while you type, that the remote folder exists. **Remove folder** only edits the configuration; no file is deleted, locally or remotely.
