@@ -1,6 +1,6 @@
 # Contributing
 
-You need Rust 1.89 or newer. The maintainer only has a Windows machine, so Windows is the only platform that is tested by hand. macOS and Linux are compiled and unit-tested in CI, which is the only check they get.
+You need Rust 1.89 or newer. The program is for Windows only, and so is CI.
 
 ```sh
 cargo fmt --check
@@ -9,7 +9,7 @@ cargo test
 cargo build --release
 ```
 
-These are the same checks as CI. On Linux you first need `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev`.
+These are the same checks as CI.
 
 The sync logic (`src/sync.rs`) reaches the remote through the `Remote` trait, and the tests use a local directory instead of a real ssh server, so the tests need no server. The tests of `src/ssh.rs` run its real shell scripts through a stand-in for `ssh` that executes the remote command locally; they need an `sh`, and skip themselves without one. After changing a shell script in `src/ssh.rs`, try it against a real VPS by hand.
 

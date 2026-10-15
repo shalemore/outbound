@@ -274,17 +274,23 @@ impl Config {
     }
 }
 
+/// `%APPDATA%\outbound\config.toml`
 pub fn config_path() -> Result<PathBuf> {
-    Ok(dirs::config_dir()
-        .context("cannot find the user configuration directory")?
+    Ok(known_folder("APPDATA")?
         .join("outbound")
         .join("config.toml"))
 }
 
+/// `%LOCALAPPDATA%\outbound`, for the log, the lock and the notification icon.
 pub fn data_dir() -> Result<PathBuf> {
-    Ok(dirs::data_local_dir()
-        .context("cannot find the user data directory")?
-        .join("outbound"))
+    Ok(known_folder("LOCALAPPDATA")?.join("outbound"))
+}
+
+fn known_folder(variable: &str) -> Result<PathBuf> {
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .with_context(|| format!("%{variable}% is not set"))
 }
 
 /// Changes the configuration file in place and keeps its comments and layout. The result is

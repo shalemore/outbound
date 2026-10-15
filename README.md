@@ -18,10 +18,7 @@ A tray app that mirrors **new** files from local folders to a folder on your VPS
 
 ## Platforms
 
-| Platform | Status |
-| --- | --- |
-| Windows | Supported. A single portable `outbound-x86_64-pc-windows-msvc.exe` is published on the [Releases](https://github.com/shalemore/outbound/releases) page. There is no installer: run it and it lives in the tray. |
-| macOS, Linux | The code is portable and CI builds and unit-tests it, but it has never been run by hand and no binaries are published. Build it yourself with `cargo build --release`. On Linux you need GTK 3, libxdo and an app indicator library (`libgtk-3-dev libxdo-dev libayatana-appindicator3-dev` on Debian and Ubuntu), and a desktop with tray support (GNOME needs an extension). |
+Windows 10 and 11 only. A single portable `outbound-x86_64-pc-windows-msvc.exe` is published on the [Releases](https://github.com/shalemore/outbound/releases) page. There is no installer: run it and it lives in the tray. Other systems are not supported for now.
 
 ## Install
 
@@ -47,22 +44,20 @@ The executable is not code-signed. Windows SmartScreen may therefore show "Windo
 | SSH host | Lists the host aliases of `~/.ssh/config` (wildcard patterns are skipped). Choosing one writes it to `ssh.destination`. |
 | Folders | Lists the configured folders. A check mark turns a folder on or off. |
 | Folders → Remove folder | Asks, then takes the folder out of the configuration file. Nothing is deleted, neither locally nor on the VPS, and the files that were already sent stay where they are. |
-| Folders → Add folder mapping… | Pick the local folder in the system folder picker. outbound then asks the VPS for its home directory and asks for the folder on the VPS, starting from `<home>/<folder name>`. On Windows this is a native dialog that checks over ssh, while you type, that the folder exists, and lists the folders next to it, so that a path can also be clicked together; OK is only available for a folder that exists. Other systems get a plain input box, and the folder is checked before anything is written. |
-| Open configuration file / log folder | Opens them in the default program (Notepad for the configuration on Windows). |
+| Folders → Add folder mapping… | Pick the local folder in the system folder picker. outbound then asks the VPS for its home directory and asks for the folder on the VPS, starting from `<home>/<folder name>`. The dialog checks over ssh, while you type, that the folder exists, and lists the folders next to it, so that a path can also be clicked together; OK is only available for a folder that exists. |
+| Open configuration file / log folder | The configuration opens in Notepad and the log folder in Explorer. |
 | Clean up and quit… | Removes what the program has put on this computer outside its own folders, checks that it is gone, and quits. See [Clean up](#clean-up). |
 
 Pending means files that need an upload and have not been handled yet, or that failed and will be tried again. Files that were modified so recently that they are probably still being downloaded are counted separately as "still being written".
-
-On Linux the input box needs `zenity` or `kdialog`, and the folder picker needs a desktop portal (or `zenity`).
 
 ## Configuration
 
 The first run writes a configuration template and shows it as a problem in the tray menu. Set it up from the tray menu, or edit the file by hand. A change is picked up on the next scan, so no restart is needed. The tray menu edits the file in place and keeps its comments.
 
-| | Windows | macOS | Linux |
-| --- | --- | --- | --- |
-| Configuration | `%APPDATA%\outbound\config.toml` | `~/Library/Application Support/outbound/config.toml` | `~/.config/outbound/config.toml` |
-| Log | `%LOCALAPPDATA%\outbound\outbound.log` | `~/Library/Application Support/outbound/outbound.log` | `~/.local/share/outbound/outbound.log` |
+| | Location |
+| --- | --- |
+| Configuration | `%APPDATA%\outbound\config.toml` |
+| Log | `%LOCALAPPDATA%\outbound\outbound.log` |
 
 ```toml
 # Optional global settings. Keep them above the first table.
@@ -111,9 +106,7 @@ With `after_upload = "trash"`, a local file is moved to the recycle bin once the
 
 outbound shows a system notification when a cycle has uploaded files, when a conflict appears and when a problem appears. A conflict or a problem is announced once, not on every scan, and several new ones are combined into one notification. Set `notifications = false` to turn them off.
 
-- **Windows.** Toasts are attributed to "Outbound" and carry its icon. For that the program writes one registry entry, `HKCU\Software\Classes\AppUserModelId\shalemore.outbound`, and the icon as `icon.png` next to the configuration. It does this when it shows its first notification, and a run that never notifies leaves nothing behind. Windows also creates a matching entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings` for your choices in the notification settings.
-- **macOS.** A program without an app bundle cannot own notifications, so they appear as coming from Finder. Not tested.
-- **Linux.** A notification daemon has to be running. Not tested.
+Toasts are attributed to "Outbound" and carry its icon. For that the program writes one registry entry, `HKCU\Software\Classes\AppUserModelId\shalemore.outbound`, and the icon as `icon.png` next to the configuration. It does this when it shows its first notification, and a run that never notifies leaves nothing behind. Windows also creates a matching entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings` for your choices in the notification settings.
 
 ## Clean up
 

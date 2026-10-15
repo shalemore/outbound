@@ -1,4 +1,4 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
 mod actions;
 mod cleanup;
@@ -8,7 +8,6 @@ mod hosts;
 mod icon;
 mod ledger;
 mod notifier;
-#[cfg(windows)]
 mod remote_dialog;
 mod ssh;
 mod status;
@@ -23,11 +22,9 @@ use std::{
 };
 
 use anyhow::Result;
-#[cfg(target_os = "macos")]
-use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tao::{
     event::{Event, StartCause},
-    event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy},
+    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
 };
 use tray_icon::{
     TrayIcon, TrayIconBuilder,
@@ -88,7 +85,7 @@ fn run() -> Result<()> {
     }
     init_logging(&data_dir.join("outbound.log"))?;
 
-    let event_loop = build_event_loop();
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
     let refresh_proxy = Mutex::new(event_loop.create_proxy());
     let reporter = Reporter::new(Arc::new(move || {
@@ -162,18 +159,6 @@ fn run() -> Result<()> {
             _ => {}
         }
     })
-}
-
-fn build_event_loop() -> EventLoop<UserEvent> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-        // Keep the app out of the Dock: it only lives in the menu bar.
-        event_loop.set_activation_policy(ActivationPolicy::Accessory);
-        event_loop
-    }
-    #[cfg(not(target_os = "macos"))]
-    EventLoopBuilder::<UserEvent>::with_user_event().build()
 }
 
 struct Tray {
@@ -486,23 +471,16 @@ fn clean_up_and_quit() -> bool {
 }
 
 fn open(path: Result<PathBuf>) {
-    if let Err(e) = path.and_then(|path| open_with_default_app(&path)) {
+    if let Err(e) = path.and_then(|path| open_in_explorer_or_notepad(&path)) {
         tracing::warn!("cannot open the file or folder: {e:#}");
     }
 }
 
-fn open_with_default_app(path: &Path) -> Result<()> {
-    // Windows has no program associated with .toml files by default, so open them in Notepad
-    // instead of showing the "how do you want to open this file" dialog.
-    #[cfg(windows)]
-    if path
-        .extension()
-        .is_some_and(|extension| extension == "toml")
-    {
-        process::Command::new("notepad").arg(path).spawn()?;
-        return Ok(());
-    }
-    opener::open(path)?;
+/// Windows has no program associated with .toml files by default, so the configuration opens in
+/// Notepad instead of the "how do you want to open this file" dialog. A folder opens in Explorer.
+fn open_in_explorer_or_notepad(path: &Path) -> Result<()> {
+    let program = if path.is_dir() { "explorer" } else { "notepad" };
+    process::Command::new(program).arg(path).spawn()?;
     Ok(())
 }
 

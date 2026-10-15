@@ -1,8 +1,7 @@
 name: Release
 
 # Builds and publishes the Windows binary when the version in Cargo.toml has no tag yet. To release,
-# bump the version in Cargo.toml (and Cargo.lock) in the same commit. Only Windows is released:
-# macOS and Linux are compiled in CI but never tested by hand.
+# bump the version in Cargo.toml (and Cargo.lock) in the same commit.
 #
 # The release also carries a Scoop manifest, made from Cargo.toml by tools/package, and asks
 # the Scoop bucket to import it, which opens a pull request there. That needs a secret called

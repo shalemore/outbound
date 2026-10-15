@@ -1,11 +1,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use notify_rust::Notification;
+use tauri_winrt_notification::Toast;
 
 const NAME: &str = "Outbound";
 /// Toasts on Windows are attributed to an application id, and a program that is not installed
 /// has to register one. Without it they would be shown as coming from Windows PowerShell.
-#[cfg(windows)]
 const APP_ID: &str = "shalemore.outbound";
 /// Toast bodies are cut off by the system anyway, so there is no point in sending long ones.
 const MAX_BODY_CHARS: usize = 200;
@@ -19,15 +18,10 @@ pub fn send(title: &str, body: &str) {
     if DISABLED.load(Ordering::Relaxed) {
         return;
     }
-    #[cfg(windows)]
     registration::ensure(APP_ID, NAME);
 
     let body: String = body.chars().take(MAX_BODY_CHARS).collect();
-    let mut notification = Notification::new();
-    notification.appname(NAME).summary(title).body(&body);
-    #[cfg(windows)]
-    notification.app_id(APP_ID);
-    if let Err(e) = notification.show() {
+    if let Err(e) = Toast::new(APP_ID).title(title).text1(&body).show() {
         tracing::warn!("cannot show a notification: {e}");
     }
 }
@@ -38,27 +32,19 @@ pub fn disable() {
 }
 
 /// What this program has put on the system for its notifications, as readable descriptions.
-/// Only Windows needs anything.
 pub fn leftovers() -> Vec<String> {
-    #[cfg(windows)]
-    return registration::leftovers(APP_ID, registration::icon_path().as_deref());
-    #[cfg(not(windows))]
-    Vec::new()
+    registration::leftovers(APP_ID, registration::icon_path().as_deref())
 }
 
 /// Removes what `leftovers` lists and returns the errors, if any.
 pub fn remove_leftovers() -> Vec<String> {
-    #[cfg(windows)]
-    return registration::remove(APP_ID, registration::icon_path().as_deref())
+    registration::remove(APP_ID, registration::icon_path().as_deref())
         .err()
         .map(|e| format!("cannot remove the notification registration: {e}"))
         .into_iter()
-        .collect();
-    #[cfg(not(windows))]
-    Vec::new()
+        .collect()
 }
 
-#[cfg(windows)]
 mod registration {
     use std::{
         fs, io,
