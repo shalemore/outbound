@@ -83,11 +83,9 @@ remote = "/data/videos"
 - The sync state is kept in memory. After a restart, files that already exist remotely are compared again with sha256, not uploaded again.
 - A `.part` file left on the remote after its source was deleted is not cleaned up.
 
-## Clean up
+## Uninstall
 
-To show notifications under its own name, outbound writes a registry entry (`HKCU\Software\Classes\AppUserModelId\shalemore.outbound`) and an `icon.png` next to the log, when the first notification is shown. Windows adds its own entry for your notification settings.
-
-**Clean up and quit…** removes them. So does `outbound --cleanup`, which exits with 0 when everything is gone and 1 otherwise; the Scoop package runs it on uninstall. The configuration, the log and the program file are never deleted.
+`scoop uninstall outbound` is all you need. If you used the `.exe` directly, choose **Clean up and quit…** in the tray menu first, then delete the file. Your configuration and log are kept.
 
 ## Development
 

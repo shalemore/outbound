@@ -13,6 +13,10 @@ These are the checks CI runs. The sync logic reaches the remote through the `Rem
 
 Everything in the repository is written in English.
 
+## Notifications
+
+To show toasts under its own name, the program writes `HKCU\Software\Classes\AppUserModelId\shalemore.outbound` and an `icon.png` next to the log, when the first one is shown. Windows adds its own entry under `Notifications\Settings`. **Clean up and quit…** and `outbound --cleanup` remove all of it; the command exits with 0 when everything is gone and 1 otherwise, and the Scoop manifest runs it before an uninstall.
+
 ## Icons
 
 `assets/icon.svg` is the source. The other icons (`assets/icon.ico`, `assets/icon-256.png`, `assets/tray/*.rgba`) are generated from it and committed, so building needs no SVG renderer. After changing the SVG:
