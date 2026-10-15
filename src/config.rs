@@ -249,7 +249,7 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let config: Self = toml::from_str(text)?;
+        let config: Self = toml_edit::de::from_str(text)?;
         config.validate()?;
         Ok(config)
     }
