@@ -159,8 +159,7 @@ impl Status {
             return "—".to_string();
         };
         let mut line = format!(
-            "{} {:.0}% · {} of {}",
-            progress_bar(t.fraction(), 12),
+            "{:.0}% · {} of {}",
             t.fraction() * 100.0,
             human_bytes(t.done),
             human_bytes(t.total),
@@ -221,11 +220,6 @@ pub fn plural(count: usize, noun: &str) -> String {
     } else {
         format!("{count} {noun}s")
     }
-}
-
-pub fn progress_bar(fraction: f32, width: usize) -> String {
-    let filled = ((fraction.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
-    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
 pub fn human_bytes(bytes: u64) -> String {
@@ -297,13 +291,6 @@ mod tests {
         assert_eq!(human_bytes(512), "512 B");
         assert_eq!(human_bytes(1536), "1.5 KiB");
         assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
-    }
-
-    #[test]
-    fn draws_progress_bar() {
-        assert_eq!(progress_bar(0.0, 4), "░░░░");
-        assert_eq!(progress_bar(0.5, 4), "██░░");
-        assert_eq!(progress_bar(2.0, 4), "████");
     }
 
     #[test]
