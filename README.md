@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/shalemore/outbound)](LICENSE)
 
 > [!WARNING]
-> outbound is in early development. Its design and documentation are still being worked out, and there may be breaking changes, including to the configuration file.
+> Early development: the design and docs are still in flux, and breaking changes are likely.
 
 A Windows tray app that mirrors **new** files from local folders to a folder on your VPS over ssh.
 
