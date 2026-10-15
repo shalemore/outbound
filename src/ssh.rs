@@ -4,6 +4,7 @@ use std::{
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::OnceLock,
     time::Instant,
 };
 
@@ -20,7 +21,8 @@ use crate::{
 const SPAWN_HINT: &str = "cannot start ssh, make sure an OpenSSH client is installed";
 
 /// Runs the system ssh, so authentication (ssh-agent, keys, ProxyJump) and known_hosts work the
-/// way they do in a terminal. The remote only needs a POSIX shell and coreutils (sha256sum, wc, mv).
+/// way they do in a terminal. The remote must be a Linux server with `sh` and `sha256sum`; the
+/// first command of a connection checks that.
 pub struct SshRemote {
     /// The program that is run, and the arguments that precede the ssh options. Normally this is
     /// plain `ssh`; the tests substitute a script that runs the remote command locally.
@@ -29,6 +31,8 @@ pub struct SshRemote {
     destination: String,
     port: Option<u16>,
     identity_file: Option<PathBuf>,
+    /// Set once the remote has been found to be supported.
+    supported: OnceLock<()>,
 }
 
 impl SshRemote {
@@ -39,6 +43,7 @@ impl SshRemote {
             destination: ssh.destination.trim().to_string(),
             port: ssh.port,
             identity_file: ssh.identity_file.clone(),
+            supported: OnceLock::new(),
         }
     }
 
@@ -76,6 +81,24 @@ impl SshRemote {
     /// The script goes to the remote `sh -s` on stdin, so paths never pass through command line
     /// escaping.
     fn run_script(&self, script: &str) -> Result<String> {
+        self.ensure_supported()?;
+        self.run_unchecked(script)
+    }
+
+    /// Only Linux is supported, because the scripts rely on GNU or BusyBox tools. macOS, the BSDs
+    /// and Windows servers fail here with a clear message instead of somewhere in the middle of an
+    /// upload.
+    fn ensure_supported(&self) -> Result<()> {
+        if self.supported.get().is_some() {
+            return Ok(());
+        }
+        let output = self.run_unchecked(PLATFORM_PROBE)?;
+        check_platform(&output)?;
+        let _ = self.supported.set(());
+        Ok(())
+    }
+
+    fn run_unchecked(&self, script: &str) -> Result<String> {
         let mut child = self
             .command()
             .args(["sh", "-s"])
@@ -224,6 +247,7 @@ impl Remote for SshRemote {
         control: &UploadControl,
         progress: &mut dyn FnMut(u64),
     ) -> Result<()> {
+        self.ensure_supported()?;
         let (directory, _) = remote
             .rsplit_once('/')
             .context("the remote path must be absolute")?;
@@ -398,6 +422,27 @@ fn parse_sha256(output: &str) -> Result<String> {
 }
 
 /// A login script may print extra text before the answer, so only the last line counts.
+/// Asks the remote what it is and whether it has the tool that the scripts need.
+const PLATFORM_PROBE: &str = "uname -s
+if command -v sha256sum >/dev/null 2>&1; then echo has-sha256sum; fi
+";
+
+/// Reads the answer to `PLATFORM_PROBE`. A login script may print extra lines, so the answers are
+/// looked for, not counted.
+fn check_platform(output: &str) -> Result<()> {
+    let says = |answer: &str| output.lines().any(|line| line.trim() == answer);
+    if !says("Linux") {
+        return Err(Permanent(
+            "the server is not running Linux, which is the only supported system".into(),
+        )
+        .into());
+    }
+    if !says("has-sha256sum") {
+        return Err(Permanent("the server has no sha256sum".into()).into());
+    }
+    Ok(())
+}
+
 /// What `SshRemote::browse` found.
 #[derive(Debug, PartialEq)]
 pub struct Browse {
@@ -517,6 +562,33 @@ mod tests {
             ..root
         };
         assert_eq!(deep.parent_path().as_deref(), Some("/data/"));
+    }
+
+    #[test]
+    fn only_linux_with_sha256sum_is_supported() {
+        assert!(
+            check_platform(
+                "Welcome!
+Linux
+has-sha256sum
+"
+            )
+            .is_ok()
+        );
+        let error = check_platform(
+            "Darwin
+",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("not running Linux"), "{error}");
+        let error = check_platform(
+            "Linux
+",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("no sha256sum"), "{error}");
     }
 
     #[test]
@@ -651,6 +723,8 @@ exec sh -c \"$*\"\n";
                 identity_file: None,
             });
             remote.program = "sh".into();
+            // The stand-in runs the scripts here, and this machine need not be Linux.
+            let _ = remote.supported.set(());
             remote.leading_arguments = vec![script.to_string_lossy().replace('\\', "/").into()];
             Some(Self {
                 _dir: dir,

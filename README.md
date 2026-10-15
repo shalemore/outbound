@@ -6,7 +6,7 @@
 > [!WARNING]
 > Early development: the design and docs are still in flux, and breaking changes are likely.
 
-A Windows tray app that mirrors **new** files from local folders to a folder on your VPS over ssh.
+A Windows tray app that mirrors **new** files from local folders to a folder on a Linux server over ssh.
 
 - **Nothing to install on the server.** It runs the system `ssh`, so keys, ssh-agent, `~/.ssh/config` and ProxyJump work as in a terminal.
 - **Verified.** A file goes to a temporary `.part` file, is checked with sha256, and is renamed only then.
@@ -30,7 +30,7 @@ Run `outbound`. The first run writes a configuration template and lists it as a 
 1. Pick the ssh host in the menu (it lists the aliases of `~/.ssh/config`).
 2. Add a folder: choose the local folder, then the folder on the VPS, which must already exist.
 
-Connect to the host once from a terminal first, to accept its host key. outbound runs `ssh` with `BatchMode`, so it never asks for a password. The remote needs a POSIX shell with `sha256sum`, `wc` and `mv`.
+Connect to the host once from a terminal first, to accept its host key. outbound runs `ssh` with `BatchMode`, so it never asks for a password. The server must run Linux and have `sha256sum`; macOS, BSD and Windows servers are not supported, and outbound says so on the first connection.
 
 ## Tray menu
 
