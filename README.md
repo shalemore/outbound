@@ -76,6 +76,8 @@ remote = "/data/videos"
 ## Notes
 
 - Only additions are mirrored. Remote files are never deleted or modified.
+- A folder that is dropped in is sent with everything in it. With `after_upload = "trash"`, it is removed once it is empty.
+- Hidden and system files, such as `desktop.ini` and `Thumbs.db`, are not sent.
 - The sync state is kept in memory. After a restart, files that already exist remotely are compared again with sha256, not uploaded again.
 - A `.part` file left on the remote after its source was deleted is not cleaned up.
 
