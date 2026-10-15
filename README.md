@@ -85,7 +85,7 @@ remote = "/data/videos"
 
 ## Uninstall
 
-`scoop uninstall outbound` is all you need. If you used the `.exe` directly, choose **Clean up and quit…** in the tray menu first, then delete the file. Your configuration and log are kept.
+`scoop uninstall outbound` is all you need. If you used the `.exe` directly, choose **Cleanup** in the tray menu first, then delete the file. Your configuration and log are kept.
 
 ## Development
 

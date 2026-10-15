@@ -112,7 +112,7 @@ impl Status {
             parts.push(plural(self.conflicts.len(), "conflict"));
         }
         if parts.is_empty() {
-            "No conflicts or problems".to_string()
+            "Problems".to_string()
         } else {
             parts.join(" · ")
         }
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn the_attention_title_counts_problems_and_conflicts() {
         let mut status = Status::default();
-        assert_eq!(status.attention_title(), "No conflicts or problems");
+        assert_eq!(status.attention_title(), "Problems");
         assert!(!status.needs_attention());
 
         status.problems = vec!["a".into()];

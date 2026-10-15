@@ -195,18 +195,18 @@ struct Tray {
 impl Tray {
     fn new(reporter: &Reporter) -> Result<Self> {
         let headline = [(); 2].map(|()| MenuItem::new("", false, None));
-        let attention_menu = Submenu::new("No conflicts or problems", false);
+        let attention_menu = Submenu::new("Problems", false);
         let pause_resume = MenuItem::new("Pause", true, None);
-        let sync_now = MenuItem::new("Sync now (and re-check conflicts)", true, None);
-        let host_menu = Submenu::new("SSH host", true);
-        let reload_hosts = MenuItem::new("Reload the list", true, None);
+        let sync_now = MenuItem::new("Sync", true, None);
+        let host_menu = Submenu::new("Host", true);
+        let reload_hosts = MenuItem::new("Reload", true, None);
         let folder_menu = Submenu::new("Folders", true);
-        let reload_folders = MenuItem::new("Reload the list", true, None);
-        let remove_menu = Submenu::new("Remove folder", false);
-        let add_mapping = MenuItem::new("Add folder mapping…", true, None);
-        let open_config = MenuItem::new("Open configuration file", true, None);
-        let open_logs = MenuItem::new("Open log folder", true, None);
-        let clean_up = MenuItem::new("Clean up and quit…", true, None);
+        let reload_folders = MenuItem::new("Reload", true, None);
+        let remove_menu = Submenu::new("Remove", false);
+        let add_mapping = MenuItem::new("Add…", true, None);
+        let open_config = MenuItem::new("Config", true, None);
+        let open_logs = MenuItem::new("Logs", true, None);
+        let clean_up = MenuItem::new("Cleanup", true, None);
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
@@ -271,14 +271,14 @@ impl Tray {
             self.hosts.push((item, host));
         }
         if self.hosts.is_empty() {
-            let none = MenuItem::new("No hosts found in ~/.ssh/config", false, None);
+            let none = MenuItem::new("No hosts", false, None);
             let _ = self.host_menu.append(&none);
         }
         let _ = self.host_menu.append(&PredefinedMenuItem::separator());
         let _ = self.host_menu.append(&self.reload_hosts);
         let title = match current {
-            Some(destination) => format!("SSH host: {destination}"),
-            None => "SSH host".to_string(),
+            Some(destination) => format!("Host: {destination}"),
+            None => "Host".to_string(),
         };
         self.host_menu.set_text(title);
 
@@ -301,7 +301,7 @@ impl Tray {
                 .push((item, mapping.local.clone(), mapping.remote.clone()));
         }
         if mappings.is_empty() {
-            let none = MenuItem::new("No folders configured", false, None);
+            let none = MenuItem::new("No folders", false, None);
             let _ = self.folder_menu.append(&none);
         }
         let _ = self.folder_menu.append(&PredefinedMenuItem::separator());
@@ -309,9 +309,6 @@ impl Tray {
         let _ = self.folder_menu.append(&self.remove_menu);
         let _ = self.folder_menu.append(&self.add_mapping);
         let _ = self.folder_menu.append(&self.reload_folders);
-        let active = mappings.iter().filter(|mapping| mapping.enabled).count();
-        self.folder_menu
-            .set_text(format!("Folders: {active} of {} active", mappings.len()));
     }
 
     fn refresh(&mut self, reporter: &Reporter) {
@@ -409,8 +406,7 @@ impl Tray {
             self.removable.iter().find(|(item, ..)| item.id() == id)
         {
             let question = format!(
-                "Stop sending {local} to {remote} and remove it from the configuration?
-
+                "Stop sending {local} to {remote} and remove it from the configuration?\n\n\
                  Nothing is deleted, neither here nor on the VPS."
             );
             if dialog::confirm(&question) {
@@ -449,8 +445,9 @@ fn set_text(item: &MenuItem, text: String) {
 /// Asks, removes what the program has put on this machine, checks it and only then quits. The
 /// program file stays where it is.
 fn clean_up_and_quit() -> bool {
-    let question = "Remove everything Outbound has set up on this computer and quit?\n\n\
-                    Your configuration and log are kept, and so is the program file.";
+    let question = "Remove the notification entries that Outbound added to Windows, and quit?\n\n\
+                    Do this before you delete the program. Your configuration, your log and \
+                    the program file are kept.";
     if !dialog::confirm(question) {
         return false;
     }
