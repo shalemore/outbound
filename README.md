@@ -12,7 +12,6 @@ A Windows tray app that mirrors **new** files from local folders to a folder on 
 - **Verified.** Every upload is checked with sha256 before it appears.
 - **Resumable.** An interrupted upload continues where it stopped, and failures are retried.
 - **Never overwrites.** A different file with the same name is a conflict, not a replacement.
-- **Tray status.** The icon shows the progress and the state.
 
 ## Install
 
@@ -41,12 +40,12 @@ Run `outbound`. The first run writes a configuration template and lists it as a 
 
 ## Tray menu
 
-- **Icon.** The strip is the progress bar. The color is the state: teal idle, blue syncing, amber conflicts, red problems, gray paused.
-- **Status.** What is going on, and how many files are pending and uploaded. Conflicts and problems are in a submenu.
-- **Pause / Resume** and **Sync now.** A pause stops the work at once and is not remembered after a restart.
+- **Icon.** A strip on the icon is the progress bar, and its color is the state: teal idle, blue syncing, amber conflicts, red problems, gray paused.
+- **Pause.** It is not remembered after a restart.
 - **SSH host.** Writes the chosen alias to `ssh.destination`.
-- **Folders.** Tick a folder to turn it on or off. **Add folder mapping…** checks over ssh, while you type, that the remote folder exists. **Remove folder** only edits the configuration; no file is deleted, locally or remotely.
-- **Open configuration file / log folder.**
+- **Folders.** Tick a folder to turn it on or off.
+- **Add folder mapping…** Checks over ssh, as you type, that the folder on the server exists.
+- **Remove folder.** Only edits the configuration. No file is deleted.
 - **Clean up and quit…** See [Clean up](#clean-up).
 
 ## Configuration
@@ -81,7 +80,6 @@ remote = "/data/videos"
 ## Notes
 
 - Only additions are mirrored. Remote files are never deleted or modified.
-- Subfolders are included, and missing remote subfolders are created.
 - The sync state is kept in memory. After a restart, files that already exist remotely are compared again with sha256, not uploaded again.
 - A `.part` file left on the remote after its source was deleted is not cleaned up.
 
