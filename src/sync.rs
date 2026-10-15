@@ -1,14 +1,15 @@
 use std::{
     collections::BTreeMap,
-    fs::File,
+    fs::{self, File},
     io::Read,
+    os::windows::fs::MetadataExt,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 use crate::{
     config::{AfterUpload, Config, Mapping},
@@ -112,6 +113,8 @@ fn backoff(base_secs: u64, attempt: u32) -> Duration {
 
 pub struct Candidate {
     pub local: PathBuf,
+    /// The mapped folder that the file is in.
+    pub root: PathBuf,
     pub remote: String,
     pub size: u64,
     pub modified: u64,
@@ -500,10 +503,35 @@ impl Engine<'_> {
             (self.trash)(&candidate.local)
                 .context("uploaded, but cannot move the local file to the trash")?;
             tracing::info!("moved {} to the trash", candidate.local.display());
+            remove_empty_folders(&candidate.local, &candidate.root);
         } else {
             ledger.insert(key.to_string(), candidate.size, candidate.modified);
         }
         Ok(handled)
+    }
+}
+
+/// Windows marks its own files, such as desktop.ini and Thumbs.db, and the lock files of Office
+/// as hidden or system files. They are not the user's files, so neither they nor the folders that
+/// are marked like that are sent.
+fn is_hidden(entry: &DirEntry) -> bool {
+    const HIDDEN: u32 = 0x2;
+    const SYSTEM: u32 = 0x4;
+    entry
+        .metadata()
+        .is_ok_and(|metadata| metadata.file_attributes() & (HIDDEN | SYSTEM) != 0)
+}
+
+/// A folder that was dropped into a mapped folder is empty once its files went to the trash.
+/// The empty folders are removed, up to but not including the mapped folder. A folder that still
+/// holds anything stays, because only an empty folder can be removed.
+fn remove_empty_folders(file: &Path, root: &Path) {
+    let mut folder = file.parent();
+    while let Some(current) = folder {
+        if current == root || !current.starts_with(root) || fs::remove_dir(current).is_err() {
+            break;
+        }
+        folder = current.parent();
     }
 }
 
@@ -572,7 +600,11 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
     let mut waiting = 0;
     let mut settles_at: Option<u64> = None;
 
-    for entry in WalkDir::new(&mapping.local).sort_by_file_name() {
+    let walk = WalkDir::new(&mapping.local)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|entry| entry.depth() == 0 || !is_hidden(entry));
+    for entry in walk {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
@@ -604,6 +636,7 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
         };
         candidates.push(Candidate {
             local: entry.into_path(),
+            root: mapping.local.clone(),
             remote: format!("{remote_root}/{relative}"),
             size: metadata.len(),
             modified,
@@ -977,6 +1010,44 @@ mod tests {
         assert_eq!(fx.uploads().len(), 1);
         assert!(fx.trashed.borrow().is_empty());
         assert!(fx.local.join("a.mkv").exists());
+    }
+
+    #[test]
+    fn hidden_and_system_files_are_not_sent() {
+        let mut fx = Fixture::new();
+        fs::write(fx.local.join("a.mkv"), "a").unwrap();
+        fs::write(fx.local.join("desktop.ini"), "[.ShellClassInfo]").unwrap();
+        fs::create_dir(fx.local.join("hidden")).unwrap();
+        fs::write(fx.local.join("hidden/b.mkv"), "b").unwrap();
+        for (path, flags) in [("desktop.ini", "+h +s"), ("hidden", "+h")] {
+            let mut command = std::process::Command::new("attrib");
+            command.args(flags.split(' ')).arg(fx.local.join(path));
+            assert!(command.status().unwrap().success());
+        }
+
+        fx.run();
+        assert_eq!(fx.uploads(), ["/videos/a.mkv"]);
+    }
+
+    #[test]
+    fn a_dropped_folder_goes_away_once_its_files_are_in_the_trash() {
+        let mut fx = Fixture::new();
+        fx.config.after_upload = AfterUpload::Trash;
+        fs::create_dir_all(fx.local.join("show/season 1")).unwrap();
+        fs::create_dir_all(fx.local.join("keep")).unwrap();
+        fs::write(fx.local.join("show/season 1/e01.mkv"), "1").unwrap();
+        fs::write(fx.local.join("show/season 1/e02.mkv"), "2").unwrap();
+        fs::write(fx.local.join("keep/note.mkv"), "n").unwrap();
+        fs::write(fx.local.join("keep/still.txt.part"), "p").unwrap();
+
+        fx.run();
+        assert_eq!(fx.uploads().len(), 3);
+        assert!(
+            !fx.local.join("show").exists(),
+            "the emptied folders are gone"
+        );
+        assert!(fx.local.join("keep").exists(), "a folder with a file stays");
+        assert!(fx.local.exists(), "the mapped folder itself stays");
     }
 
     #[test]
