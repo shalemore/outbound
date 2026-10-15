@@ -1,12 +1,12 @@
 # outbound
 
-![The tray menu of outbound](docs/tray-menu.png)
-
 [![CI](https://github.com/shalemore/outbound/actions/workflows/ci.yml/badge.svg)](https://github.com/shalemore/outbound/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/shalemore/outbound)](LICENSE)
 
 > [!WARNING]
 > Early development: the design and docs are still in flux, and breaking changes are likely.
+
+![The tray menu of outbound](docs/tray-menu.png)
 
 A Windows tray app that mirrors **new** files from local folders to a folder on a Linux server over ssh.
 
