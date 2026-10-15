@@ -11,7 +11,6 @@ use std::{
 
 use crate::{
     config::{self, Config},
-    ledger::Ledger,
     ssh::SshRemote,
     status::Reporter,
     sync::{Conflicts, Engine, now_secs},
@@ -69,7 +68,6 @@ pub fn spawn(
     control: Arc<Control>,
 ) {
     thread::spawn(move || {
-        let mut ledger = Ledger::default();
         let mut conflicts = Conflicts::new();
         let mut watch = Watch::new(events);
         loop {
@@ -89,7 +87,7 @@ pub fn spawn(
             reporter.update(|status| status.paused = false);
 
             let started = Instant::now();
-            let cycle = run_once(&reporter, &notify, &control, &mut ledger, &mut conflicts);
+            let cycle = run_once(&reporter, &notify, &control, &mut conflicts);
             watch.set_folders(&cycle.folders);
 
             let mut wake = Instant::now() + cycle.interval;
@@ -143,7 +141,6 @@ fn run_once(
     reporter: &Reporter,
     notify: &Notifier,
     control: &Control,
-    ledger: &mut Ledger,
     conflicts: &mut Conflicts,
 ) -> Cycle {
     let config = config::config_path().and_then(|path| Config::load(&path));
@@ -158,7 +155,7 @@ fn run_once(
                 sleep: &thread::sleep,
                 reporter,
             };
-            let settles_at = engine.run_cycle(ledger, conflicts, now_secs());
+            let settles_at = engine.run_cycle(conflicts, now_secs());
             Cycle {
                 interval: Duration::from_secs(config.scan_interval_secs),
                 folders: config

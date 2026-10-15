@@ -11,6 +11,7 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 const CHOOSE_HOST: &str = "Choose the SSH host, then add a folder, both in this menu";
 
 const TEMPLATE: &str = r#"# outbound configuration. Changes take effect on the next scan.
+# A file goes to the recycle bin once the server holds exactly the same content.
 # The tray menu can also set the ssh host and add folder mappings; it writes this file.
 # In paths, use forward slashes (D:/Downloads) or single-quoted strings ('D:\Downloads').
 
@@ -21,10 +22,6 @@ const TEMPLATE: &str = r#"# outbound configuration. Changes take effect on the n
 # settle_secs = 60
 # Temporary extensions used by downloaders. These files are never uploaded.
 # ignored_extensions = ["part", "crdownload", "tmp", "!qb", "aria2", "downloading", "opdownload"]
-# What to do with a local file once the remote holds exactly the same content:
-# "keep" leaves it alone, "trash" moves it to the recycle bin so it can still be restored.
-# Files that conflict with a different remote file are never touched.
-# after_upload = "keep"
 # Show a system notification when files were uploaded and when a conflict or a problem appears.
 # notifications = true
 # A failed upload is tried again this many times, waiting 2 s, then 4 s, then 8 s and so on.
@@ -47,7 +44,6 @@ destination = ""
 # remote = "/data/videos"
 # Optional per-folder settings. They override the global ones above for this folder only.
 # enabled = true
-# after_upload = "keep"
 # settle_secs = 60
 # ignored_extensions = ["part", "crdownload"]
 "#;
@@ -65,8 +61,6 @@ pub struct Config {
     pub settle_secs: u64,
     #[serde(default = "default_ignored_extensions")]
     pub ignored_extensions: Vec<String>,
-    #[serde(default)]
-    pub after_upload: AfterUpload,
     #[serde(default = "default_notifications")]
     pub notifications: bool,
     /// How many times a failed upload is tried again before it is reported.
@@ -141,16 +135,6 @@ fn default_retry_delay_secs() -> u64 {
     2
 }
 
-/// What happens to a local file once the remote is known to hold exactly the same content.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AfterUpload {
-    #[default]
-    Keep,
-    /// Move the file to the recycle bin, so it can still be restored.
-    Trash,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ssh {
@@ -168,7 +152,6 @@ pub struct Mapping {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// The settings below override the global ones for this folder only.
-    pub after_upload: Option<AfterUpload>,
     pub settle_secs: Option<u64>,
     pub ignored_extensions: Option<Vec<String>>,
 }
@@ -180,14 +163,9 @@ impl Mapping {
             local: local.into(),
             remote: remote.to_string(),
             enabled: true,
-            after_upload: None,
             settle_secs: None,
             ignored_extensions: None,
         }
-    }
-
-    pub fn after_upload(&self, config: &Config) -> AfterUpload {
-        self.after_upload.unwrap_or(config.after_upload)
     }
 
     pub fn settle_secs(&self, config: &Config) -> u64 {
@@ -467,18 +445,6 @@ mod tests {
         assert_eq!(config.scan_interval_secs, 30);
         assert_eq!(config.settle_secs, 60);
         assert!(config.ignored_extensions.contains(&"part".to_string()));
-        assert_eq!(config.after_upload, AfterUpload::Keep);
-    }
-
-    #[test]
-    fn parses_after_upload() {
-        let trash = format!("after_upload = \"trash\"\n{MINIMAL}");
-        assert_eq!(
-            Config::parse(&trash).unwrap().after_upload,
-            AfterUpload::Trash
-        );
-        let unknown = format!("after_upload = \"delete\"\n{MINIMAL}");
-        assert!(Config::parse(&unknown).is_err());
     }
 
     #[test]
@@ -506,11 +472,10 @@ mod tests {
 
     #[test]
     fn every_optional_setting_in_the_template_can_be_enabled() {
-        const OPTIONAL: [&str; 11] = [
+        const OPTIONAL: [&str; 10] = [
             "scan_interval_secs",
             "settle_secs",
             "ignored_extensions",
-            "after_upload",
             "notifications",
             "retries",
             "retry_delay_secs",
@@ -530,7 +495,7 @@ mod tests {
         let config = Config::parse(&enabled.join("\n")).unwrap();
         assert_eq!(config.ssh.port, Some(22));
         assert_eq!(config.settle_secs, 60);
-        assert_eq!(config.mappings[0].after_upload, Some(AfterUpload::Keep));
+        assert!(config.mappings[0].enabled);
     }
 
     fn temp_config(contents: &str) -> (tempfile::TempDir, PathBuf) {
@@ -598,7 +563,6 @@ mod tests {
     #[test]
     fn a_mapping_overrides_the_global_settings() {
         let text = r#"
-            after_upload = "trash"
             settle_secs = 10
 
             [ssh]
@@ -607,7 +571,6 @@ mod tests {
             [[mapping]]
             local = "D:/a"
             remote = "/a"
-            after_upload = "keep"
             settle_secs = 99
             ignored_extensions = ["x"]
 
@@ -619,12 +582,10 @@ mod tests {
         let config = Config::parse(text).unwrap();
         let (first, second) = (&config.mappings[0], &config.mappings[1]);
 
-        assert_eq!(first.after_upload(&config), AfterUpload::Keep);
         assert_eq!(first.settle_secs(&config), 99);
         assert_eq!(first.ignored_extensions(&config), ["x"]);
         assert!(first.enabled);
 
-        assert_eq!(second.after_upload(&config), AfterUpload::Trash);
         assert_eq!(second.settle_secs(&config), 10);
         assert_eq!(
             second.ignored_extensions(&config),

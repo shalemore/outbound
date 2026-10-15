@@ -8,7 +8,7 @@
 
 ![The tray menu of outbound](docs/tray-menu.png)
 
-A Windows tray app that mirrors **new** files from local folders to a folder on a Linux server over ssh.
+A Windows tray app that moves files from local folders to a folder on a Linux server over ssh. A file goes to the Recycle Bin once the server has an identical copy.
 
 - **No server setup.** It uses your system `ssh`, so nothing is installed on the server.
 - **Verified.** Every upload is checked with sha256 before it appears.
@@ -53,7 +53,6 @@ A strip on the icon is the progress bar, and its color is the state: teal idle, 
 scan_interval_secs = 30       # folders are also watched, so new files are noticed at once
 settle_secs = 60              # upload a file once it has been left alone this long
 ignored_extensions = ["part", "crdownload", "tmp", "!qb", "aria2", "downloading", "opdownload"]
-after_upload = "keep"         # "trash" moves the local file to the recycle bin
 notifications = true
 retries = 3
 retry_delay_secs = 2          # doubles with every retry, up to a minute
@@ -68,17 +67,15 @@ destination = "user@example.com"   # or an alias from ~/.ssh/config
 local = "D:/Downloads/outbox"
 remote = "/data/videos"
 # enabled = false             # keep the mapping but ignore it
-# after_upload, settle_secs and ignored_extensions can be set here too
+# settle_secs and ignored_extensions can be set here too
 ```
-
-`after_upload = "trash"` moves a file only once the remote is known to hold identical content, and never touches a conflicting file.
 
 ## Notes
 
-- Only additions are mirrored. Remote files are never deleted or modified.
-- A folder that is dropped in is sent with everything in it. With `after_upload = "trash"`, it is removed once it is empty.
+- Files on the server are never deleted or modified.
+- A file that conflicts with a different file on the server stays where it is.
+- A folder that is dropped in is sent with everything in it, and removed once it is empty.
 - Hidden and system files, such as `desktop.ini` and `Thumbs.db`, are not sent.
-- The sync state is kept in memory. After a restart, files that already exist remotely are compared again with sha256, not uploaded again.
 - A `.part` file left on the remote after its source was deleted is not cleaned up.
 
 ## Uninstall

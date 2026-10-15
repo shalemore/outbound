@@ -12,8 +12,7 @@ use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::{
-    config::{AfterUpload, Config, Mapping},
-    ledger::Ledger,
+    config::{Config, Mapping},
     status::{Phase, Reporter, Transfer, human_bytes, plural},
 };
 
@@ -118,7 +117,6 @@ pub struct Candidate {
     pub remote: String,
     pub size: u64,
     pub modified: u64,
-    pub after_upload: AfterUpload,
 }
 
 /// The result of scanning one folder.
@@ -136,7 +134,7 @@ pub struct Conflict {
     modified: u64,
 }
 
-/// Indexed by the ledger key (ssh destination + remote path). An unchanged file is not compared
+/// Indexed by the file key (ssh destination + remote path). An unchanged file is not compared
 /// again.
 pub type Conflicts = BTreeMap<String, Conflict>;
 
@@ -210,12 +208,7 @@ impl Engine<'_> {
     /// cannot be reached the whole cycle is abandoned.
     /// Returns when the first file that was still being written can be uploaded, in seconds since
     /// the epoch, so that the next cycle can be started at that moment.
-    pub fn run_cycle(
-        &self,
-        ledger: &mut Ledger,
-        conflicts: &mut Conflicts,
-        now: u64,
-    ) -> Option<u64> {
+    pub fn run_cycle(&self, conflicts: &mut Conflicts, now: u64) -> Option<u64> {
         self.reporter.update(|status| {
             status.syncing = true;
             status.transfer = None;
@@ -223,7 +216,7 @@ impl Engine<'_> {
             status.finished = 0;
         });
 
-        let summary = match self.cycle(ledger, conflicts, now) {
+        let summary = match self.cycle(conflicts, now) {
             Ok(summary) => summary,
             Err(e) => Summary {
                 problems: vec![format!("{e:#}")],
@@ -272,7 +265,7 @@ impl Engine<'_> {
         }
     }
 
-    fn cycle(&self, ledger: &mut Ledger, conflicts: &mut Conflicts, now: u64) -> Result<Summary> {
+    fn cycle(&self, conflicts: &mut Conflicts, now: u64) -> Result<Summary> {
         let mut summary = Summary::default();
         let mut waiting = 0;
 
@@ -305,12 +298,11 @@ impl Engine<'_> {
             let fresh: Vec<_> = found
                 .candidates
                 .into_iter()
-                .map(|candidate| (ledger_key(self.config, &candidate), candidate))
+                .map(|candidate| (file_key(self.config, &candidate), candidate))
                 .filter(|(key, c)| {
-                    !ledger.is_synced(key, c.size, c.modified)
-                        && !conflicts
-                            .get(key)
-                            .is_some_and(|k| k.size == c.size && k.modified == c.modified)
+                    !conflicts
+                        .get(key)
+                        .is_some_and(|k| k.size == c.size && k.modified == c.modified)
                 })
                 .collect();
             if !fresh.is_empty() {
@@ -345,7 +337,7 @@ impl Engine<'_> {
             if (self.stop)() {
                 break;
             }
-            let handled = match self.process_with_retries(&key, &candidate, ledger, conflicts) {
+            let handled = match self.process_with_retries(&key, &candidate, conflicts) {
                 Ok(handled) => Some(handled),
                 // Stopped on purpose: the file stays pending and nothing is reported.
                 Err(e) if e.is::<Cancelled>() => break,
@@ -385,12 +377,11 @@ impl Engine<'_> {
         &self,
         key: &str,
         candidate: &Candidate,
-        ledger: &mut Ledger,
         conflicts: &mut Conflicts,
     ) -> Result<Handled> {
         let attempts = self.config.retries + 1;
         for attempt in 1..attempts {
-            match self.process(key, candidate, ledger, conflicts) {
+            match self.process(key, candidate, conflicts) {
                 Err(e) if is_transient(&e) => {
                     let delay = backoff(self.config.retry_delay_secs, attempt);
                     log::warn!(
@@ -414,7 +405,7 @@ impl Engine<'_> {
                 result => return result,
             }
         }
-        self.process(key, candidate, ledger, conflicts)
+        self.process(key, candidate, conflicts)
     }
 
     /// Waits, and gives up with [`Cancelled`] as soon as the work is stopped.
@@ -435,7 +426,6 @@ impl Engine<'_> {
         &self,
         key: &str,
         candidate: &Candidate,
-        ledger: &mut Ledger,
         conflicts: &mut Conflicts,
     ) -> Result<Handled> {
         let name = file_name(candidate);
@@ -497,16 +487,12 @@ impl Engine<'_> {
 
         conflicts.remove(key);
         // Here the remote is known to hold exactly this content, so the local copy is redundant.
-        // If the trash fails, the file is not recorded as synced: the next cycle finds the
-        // identical remote file and only retries the trash, without uploading again.
-        if candidate.after_upload == AfterUpload::Trash {
-            (self.trash)(&candidate.local)
-                .context("uploaded, but cannot move the local file to the trash")?;
-            log::info!("moved {} to the trash", candidate.local.display());
-            remove_empty_folders(&candidate.local, &candidate.root);
-        } else {
-            ledger.insert(key.to_string(), candidate.size, candidate.modified);
-        }
+        // If the trash fails, the file stays, and the next cycle finds the identical remote file
+        // and only retries the trash, without uploading again.
+        (self.trash)(&candidate.local)
+            .context("uploaded, but cannot move the local file to the trash")?;
+        log::info!("moved {} to the trash", candidate.local.display());
+        remove_empty_folders(&candidate.local, &candidate.root);
         Ok(handled)
     }
 }
@@ -640,7 +626,6 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
             remote: format!("{remote_root}/{relative}"),
             size: metadata.len(),
             modified,
-            after_upload: mapping.after_upload(config),
         });
     }
     Ok(Scan {
@@ -670,11 +655,11 @@ fn relative_remote_path(root: &Path, path: &Path) -> Option<String> {
     Some(parts?.join("/"))
 }
 
-fn ledger_key(config: &Config, candidate: &Candidate) -> String {
+fn file_key(config: &Config, candidate: &Candidate) -> String {
     format!("{}:{}", config.ssh.destination, candidate.remote)
 }
 
-/// A ledger key is "destination:path"; the UI only needs the path.
+/// A file key is "destination:path"; the UI only needs the path.
 fn display_path(key: &str) -> &str {
     key.find(":/").map_or(key, |index| &key[index + 1..])
 }
@@ -768,7 +753,6 @@ mod tests {
         local: PathBuf,
         remote: FakeRemote,
         config: Config,
-        ledger: Ledger,
         conflicts: Conflicts,
         reporter: Reporter,
         trashed: RefCell<Vec<PathBuf>>,
@@ -800,13 +784,11 @@ mod tests {
                     scan_interval_secs: 30,
                     settle_secs: 0,
                     ignored_extensions: vec!["part".into()],
-                    after_upload: AfterUpload::Keep,
                     notifications: true,
                     retries: 3,
                     retry_delay_secs: 2,
                     bandwidth_limit: None,
                 },
-                ledger: Ledger::default(),
                 conflicts: Conflicts::new(),
                 reporter: Reporter::new(Arc::new(|| {})),
                 trashed: RefCell::default(),
@@ -846,7 +828,7 @@ mod tests {
                 },
                 reporter: &self.reporter,
             }
-            .run_cycle(&mut self.ledger, &mut self.conflicts, now_secs())
+            .run_cycle(&mut self.conflicts, now_secs())
         }
 
         fn waited(&self) -> Duration {
@@ -1002,17 +984,6 @@ mod tests {
     }
 
     #[test]
-    fn local_files_stay_when_after_upload_is_keep() {
-        let mut fx = Fixture::new();
-        fs::write(fx.local.join("a.mkv"), "aaa").unwrap();
-
-        fx.run();
-        assert_eq!(fx.uploads().len(), 1);
-        assert!(fx.trashed.borrow().is_empty());
-        assert!(fx.local.join("a.mkv").exists());
-    }
-
-    #[test]
     fn hidden_and_system_files_are_not_sent() {
         let mut fx = Fixture::new();
         fs::write(fx.local.join("a.mkv"), "a").unwrap();
@@ -1032,7 +1003,6 @@ mod tests {
     #[test]
     fn a_dropped_folder_goes_away_once_its_files_are_in_the_trash() {
         let mut fx = Fixture::new();
-        fx.config.after_upload = AfterUpload::Trash;
         fs::create_dir_all(fx.local.join("show/season 1")).unwrap();
         fs::create_dir_all(fx.local.join("keep")).unwrap();
         fs::write(fx.local.join("show/season 1/e01.mkv"), "1").unwrap();
@@ -1053,7 +1023,6 @@ mod tests {
     #[test]
     fn trashes_verified_files_but_never_conflicting_ones() {
         let mut fx = Fixture::new();
-        fx.config.after_upload = AfterUpload::Trash;
         fs::write(fx.local.join("new.mkv"), "new").unwrap();
         fs::write(fx.local.join("same.mkv"), "same").unwrap();
         fs::write(fx.remote.real("/videos/same.mkv"), "same").unwrap();
@@ -1082,7 +1051,6 @@ mod tests {
     #[test]
     fn a_failing_trash_is_retried_without_uploading_again() {
         let mut fx = Fixture::new();
-        fx.config.after_upload = AfterUpload::Trash;
         fs::write(fx.local.join("a.mkv"), "aaa").unwrap();
         fx.trash_fails.set(true);
 
@@ -1217,7 +1185,6 @@ mod tests {
     #[test]
     fn a_failing_file_stays_pending() {
         let mut fx = Fixture::new();
-        fx.config.after_upload = AfterUpload::Trash;
         fs::write(fx.local.join("a.mkv"), "aaa").unwrap();
         fx.trash_fails.set(true);
 
@@ -1237,14 +1204,13 @@ mod tests {
         assert!(fx.reporter.snapshot().problems.is_empty());
 
         fx.config.mappings[0].enabled = true;
-        fx.config.mappings[0].after_upload = Some(AfterUpload::Trash);
         fx.config.mappings[0].ignored_extensions = Some(vec!["skip".into()]);
         fs::write(fx.local.join("b.skip"), "x").unwrap();
         fx.run();
         assert_eq!(fx.uploads(), ["/videos/a.mkv"]);
         assert!(
             !fx.local.join("a.mkv").exists(),
-            "the mapping asks for the trash"
+            "the sent file is in the trash"
         );
         assert!(
             fx.local.join("b.skip").exists(),

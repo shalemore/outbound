@@ -7,7 +7,6 @@ mod config;
 mod dialog;
 mod hosts;
 mod icon;
-mod ledger;
 mod logfile;
 mod notifier;
 mod remote_dialog;
