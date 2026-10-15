@@ -52,7 +52,8 @@ remote = "/data/videos"
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub ssh: Ssh,
-    #[serde(rename = "mapping")]
+    /// There can be none, for example after the last folder was removed from the menu.
+    #[serde(default, rename = "mapping")]
     pub mappings: Vec<Mapping>,
     #[serde(default = "default_scan_interval_secs")]
     pub scan_interval_secs: u64,
@@ -261,9 +262,6 @@ impl Config {
         if destination.starts_with('-') {
             bail!("ssh.destination must not start with a dash");
         }
-        if self.mappings.is_empty() {
-            bail!("at least one [[mapping]] is required");
-        }
         for mapping in &self.mappings {
             if !mapping.remote.starts_with('/') {
                 bail!("remote must be an absolute path: {}", mapping.remote);
@@ -409,6 +407,24 @@ pub fn set_mapping_enabled(document: &mut DocumentMut, local: &str, enabled: boo
     Ok(())
 }
 
+/// Takes the mapping of the local folder out of the configuration. The last mapping takes the
+/// whole `mapping` table with it, so that no empty array is left behind.
+pub fn remove_mapping(document: &mut DocumentMut, local: &str) -> Result<()> {
+    let mappings = document
+        .get_mut("mapping")
+        .and_then(Item::as_array_of_tables_mut)
+        .context("the configuration has no mappings")?;
+    let position = mappings
+        .iter()
+        .position(|mapping| mapping.get("local").and_then(Item::as_str) == Some(local))
+        .with_context(|| format!("{local} is not in the configuration"))?;
+    mappings.remove(position);
+    if mappings.is_empty() {
+        document.remove("mapping");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,9 +475,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_keys_and_empty_mappings() {
+    fn rejects_unknown_keys() {
         assert!(Config::parse(&format!("unknown = 1\n{MINIMAL}")).is_err());
-        assert!(Config::parse("[ssh]\ndestination = \"vps\"").is_err());
+    }
+
+    #[test]
+    fn a_configuration_may_have_no_folders() {
+        let config = Config::parse("[ssh]\ndestination = \"vps\"").unwrap();
+        assert!(config.mappings.is_empty());
     }
 
     #[test]
@@ -622,6 +643,38 @@ mod tests {
         assert!(!config.mappings[1].enabled);
 
         assert!(edit(&path, |doc| set_mapping_enabled(doc, "D:/Nope", true)).is_err());
+    }
+
+    #[test]
+    fn removes_a_mapping_and_keeps_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "# my notes
+[ssh]
+destination = \"vps\"
+
+[[mapping]]
+local = \"D:/a\"
+remote = \"/data/a\"
+
+[[mapping]]
+local = \"D:/b\"
+remote = \"/data/b\"
+",
+        )
+        .unwrap();
+
+        edit(&path, |doc| remove_mapping(doc, "D:/a")).unwrap();
+        let overview = mappings_overview(&path);
+        assert_eq!(overview.len(), 1);
+        assert_eq!(overview[0].local, "D:/b");
+        assert!(fs::read_to_string(&path).unwrap().starts_with("# my notes"));
+
+        assert!(edit(&path, |doc| remove_mapping(doc, "D:/a")).is_err());
+        edit(&path, |doc| remove_mapping(doc, "D:/b")).unwrap();
+        assert!(mappings_overview(&path).is_empty());
     }
 
     #[test]

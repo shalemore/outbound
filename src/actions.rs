@@ -52,6 +52,13 @@ pub fn set_folder_enabled(local: &str, enabled: bool) -> Result<()> {
     })
 }
 
+/// Takes the mapping of a local folder out of the configuration file.
+pub fn remove_folder(local: &str) -> Result<()> {
+    config::edit(&config::config_path()?, |document| {
+        config::remove_mapping(document, local)
+    })
+}
+
 /// First step of adding a folder mapping: pick the local folder, then ask the VPS for its home
 /// directory in the background so that the next dialog can suggest a remote folder.
 pub fn start_add_mapping(proxy: &EventLoopProxy<UserEvent>) {

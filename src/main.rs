@@ -192,6 +192,9 @@ struct Tray {
     /// The configured folders that are currently listed in the submenu, by local path.
     folders: Vec<(CheckMenuItem, String)>,
     reload_folders: MenuItem,
+    remove_menu: Submenu,
+    /// The configured folders that the submenu can remove, by local path and remote folder.
+    removable: Vec<(MenuItem, String, String)>,
     add_mapping: MenuItem,
     open_config: MenuItem,
     open_logs: MenuItem,
@@ -212,6 +215,7 @@ impl Tray {
         let reload_hosts = MenuItem::new("Reload the list", true, None);
         let folder_menu = Submenu::new("Folders", true);
         let reload_folders = MenuItem::new("Reload the list", true, None);
+        let remove_menu = Submenu::new("Remove folder", false);
         let add_mapping = MenuItem::new("Add folder mapping…", true, None);
         let open_config = MenuItem::new("Open configuration file", true, None);
         let open_logs = MenuItem::new("Open log folder", true, None);
@@ -252,6 +256,8 @@ impl Tray {
             folder_menu,
             folders: Vec::new(),
             reload_folders,
+            remove_menu,
+            removable: Vec::new(),
             add_mapping,
             open_config,
             open_logs,
@@ -291,21 +297,29 @@ impl Tray {
 
         while self.folder_menu.remove_at(0).is_some() {}
         self.folders.clear();
+        while self.remove_menu.remove_at(0).is_some() {}
+        self.removable.clear();
         let mappings = path
             .as_deref()
             .map(config::mappings_overview)
             .unwrap_or_default();
         for mapping in &mappings {
             let label = format!("{} → {}", mapping.local, mapping.remote);
-            let item = CheckMenuItem::new(label, true, mapping.enabled, None);
+            let item = CheckMenuItem::new(&label, true, mapping.enabled, None);
             let _ = self.folder_menu.append(&item);
             self.folders.push((item, mapping.local.clone()));
+            let item = MenuItem::new(&label, true, None);
+            let _ = self.remove_menu.append(&item);
+            self.removable
+                .push((item, mapping.local.clone(), mapping.remote.clone()));
         }
         if mappings.is_empty() {
             let none = MenuItem::new("No folders configured", false, None);
             let _ = self.folder_menu.append(&none);
         }
         let _ = self.folder_menu.append(&PredefinedMenuItem::separator());
+        self.remove_menu.set_enabled(!mappings.is_empty());
+        let _ = self.folder_menu.append(&self.remove_menu);
         let _ = self.folder_menu.append(&self.add_mapping);
         let _ = self.folder_menu.append(&self.reload_folders);
         let active = mappings.iter().filter(|mapping| mapping.enabled).count();
@@ -404,6 +418,23 @@ impl Tray {
                 Err(e) => Notice::Error(format!("{e:#}")).show(),
             }
             self.load_lists();
+        } else if let Some((_, local, remote)) =
+            self.removable.iter().find(|(item, ..)| item.id() == id)
+        {
+            let question = format!(
+                "Stop sending {local} to {remote} and remove it from the configuration?
+
+                 Nothing is deleted, neither here nor on the VPS."
+            );
+            if dialog::confirm(&question) {
+                match actions::remove_folder(local) {
+                    Ok(()) => {
+                        let _ = context.commands.send(Command::SyncNow);
+                    }
+                    Err(e) => Notice::Error(format!("{e:#}")).show(),
+                }
+                self.load_lists();
+            }
         } else if id == self.add_mapping.id() {
             actions::start_add_mapping(&context.proxy);
         } else if id == self.open_config.id() {

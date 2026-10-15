@@ -1687,6 +1687,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "outbound"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "notify-rust",
+ "opener",
+ "rfd",
+ "serde",
+ "sha2",
+ "ssh2-config",
+ "tao",
+ "tempfile",
+ "tinyfiledialogs",
+ "toml 1.1.8+spec-1.1.0",
+ "toml_edit 0.25.17+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "trash",
+ "tray-icon",
+ "walkdir",
+ "winreg",
+ "winresource",
+]
+
+[[package]]
 name = "pango"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2197,32 +2223,6 @@ dependencies = [
  "pkg-config",
  "toml 0.8.2",
  "version-compare",
-]
-
-[[package]]
-name = "outbound"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "notify-rust",
- "opener",
- "rfd",
- "serde",
- "sha2",
- "ssh2-config",
- "tao",
- "tempfile",
- "tinyfiledialogs",
- "toml 1.1.8+spec-1.1.0",
- "toml_edit 0.25.17+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "trash",
- "tray-icon",
- "walkdir",
- "winreg",
- "winresource",
 ]
 
 [[package]]
