@@ -13,9 +13,12 @@ These are the checks CI runs. The sync logic reaches the remote through the `Rem
 
 Everything in the repository is written in English.
 
-## Notifications
+## What the program writes outside its folders
 
-To show toasts under its own name, the program writes `HKCU\Software\Classes\AppUserModelId\shalemore.outbound` and an `icon.png` next to the log, when the first one is shown. Windows adds its own entry under `Notifications\Settings`. **Clean up and quit** and `outbound --cleanup` remove all of it; the command exits with 0 when everything is gone and 1 otherwise, and the Scoop manifest runs it before an uninstall.
+- To show toasts under its own name, `HKCU\Software\Classes\AppUserModelId\shalemore.outbound` and an `icon.png` next to the log, when the first toast is shown. Windows adds its own entry under `Notifications\Settings`.
+- For **Start with Windows**, the value `outbound` in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It is rewritten at start if the program has moved.
+
+**Clean up and quit** and `outbound --cleanup` remove all of it. The command exits with 0 when everything is gone and 1 otherwise. The Scoop manifest runs it before an uninstall, but not before an update, which would lose the startup entry.
 
 ## Icons
 

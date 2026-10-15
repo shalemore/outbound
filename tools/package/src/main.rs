@@ -70,11 +70,11 @@ fn main() -> Result<()> {
     }
     if let Some(argument) = scoop["cleanup"].as_str() {
         // For a program that puts something on the machine outside its own folder: stop it, then
-        // let it remove those things.
+        // let it remove those things. An update runs this step too, and must keep them.
         manifest["pre_uninstall"] = json!([
             format!("Get-Process {name} -ErrorAction SilentlyContinue | Stop-Process"),
             format!(
-                "Start-Process -FilePath \"$dir\\{name}.exe\" -ArgumentList '{argument}' -Wait"
+                "if ($cmd -eq 'uninstall') {{ Start-Process -FilePath \"$dir\\{name}.exe\" -ArgumentList '{argument}' -Wait }}"
             ),
         ]);
     }

@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod actions;
+mod autostart;
 mod cleanup;
 mod config;
 mod dialog;
@@ -84,6 +85,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
     init_logging(&data_dir.join("outbound.log"))?;
+    autostart::refresh();
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
@@ -186,6 +188,7 @@ struct Tray {
     /// The configured folders that the submenu can remove, by local path and remote folder.
     removable: Vec<(MenuItem, String, String)>,
     add_mapping: MenuItem,
+    autostart: CheckMenuItem,
     open_config: MenuItem,
     open_logs: MenuItem,
     clean_up: MenuItem,
@@ -207,6 +210,8 @@ impl Tray {
         let reload_folders = MenuItem::new("Reload folders", true, None);
         let remove_menu = Submenu::new("Remove folder", false);
         let add_mapping = MenuItem::new("Add folder…", true, None);
+        let autostart =
+            CheckMenuItem::new("Start with Windows", true, autostart::is_enabled(), None);
         let open_config = MenuItem::new("Open config file", true, None);
         let open_logs = MenuItem::new("Open log folder", true, None);
         let clean_up = MenuItem::new("Clean up and quit", true, None);
@@ -224,6 +229,7 @@ impl Tray {
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&host_menu)?;
         menu.append(&folder_menu)?;
+        menu.append(&autostart)?;
         menu.append(&open_config)?;
         menu.append(&open_logs)?;
         menu.append(&PredefinedMenuItem::separator())?;
@@ -252,6 +258,7 @@ impl Tray {
             remove_menu,
             removable: Vec::new(),
             add_mapping,
+            autostart,
             open_config,
             open_logs,
             clean_up,
@@ -436,6 +443,12 @@ impl Tray {
             }
         } else if id == self.add_mapping.id() {
             actions::start_add_mapping(&context.proxy);
+        } else if id == self.autostart.id() {
+            // The item has already toggled itself, so its state is the one that was asked for.
+            if let Err(e) = autostart::set(self.autostart.is_checked()) {
+                Notice::Error(format!("cannot change the startup entry: {e}")).show();
+                self.autostart.set_checked(autostart::is_enabled());
+            }
         } else if id == self.open_config.id() {
             open(config::config_path());
         } else if id == self.open_logs.id() {

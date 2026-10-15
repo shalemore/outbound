@@ -1,4 +1,4 @@
-use crate::notifier;
+use crate::{autostart, notifier};
 
 /// What a clean-up did.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -36,9 +36,10 @@ impl Outcome {
 pub fn run() -> Outcome {
     notifier::disable();
 
-    let before = notifier::leftovers();
+    let before = leftovers();
     let mut problems = notifier::remove_leftovers();
-    let after = notifier::leftovers();
+    problems.extend(autostart::remove_leftovers());
+    let after = leftovers();
 
     let removed = before
         .into_iter()
@@ -50,6 +51,12 @@ pub fn run() -> Outcome {
             .map(|item| format!("{item} is still there")),
     );
     Outcome { removed, problems }
+}
+
+fn leftovers() -> Vec<String> {
+    let mut found = notifier::leftovers();
+    found.extend(autostart::leftovers());
+    found
 }
 
 #[cfg(test)]
