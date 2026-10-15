@@ -271,9 +271,11 @@ impl Engine<'_> {
 
     fn cycle(&self, ledger: &mut Ledger, conflicts: &mut Conflicts, now: u64) -> Result<Summary> {
         let mut summary = Summary::default();
-        let mut pending = Vec::new();
-
         let mut waiting = 0;
+
+        // The folders are scanned here first. The server is only asked about a folder that has
+        // something to send, so a cycle with nothing new makes no connection at all.
+        let mut to_send = Vec::new();
         for mapping in self.config.mappings.iter().filter(|m| m.enabled) {
             if !mapping.local.is_dir() {
                 summary.problems.push(format!(
@@ -282,42 +284,51 @@ impl Engine<'_> {
                 ));
                 continue;
             }
-            if !self
+            let found = match scan(mapping, self.config, now) {
+                Ok(found) => found,
+                Err(e) => {
+                    summary.problems.push(format!(
+                        "scanning {} failed: {e:#}",
+                        mapping.local.display()
+                    ));
+                    continue;
+                }
+            };
+            waiting += found.waiting;
+            summary.settles_at = [summary.settles_at, found.settles_at]
+                .into_iter()
+                .flatten()
+                .min();
+            let fresh: Vec<_> = found
+                .candidates
+                .into_iter()
+                .map(|candidate| (ledger_key(self.config, &candidate), candidate))
+                .filter(|(key, c)| {
+                    !ledger.is_synced(key, c.size, c.modified)
+                        && !conflicts
+                            .get(key)
+                            .is_some_and(|k| k.size == c.size && k.modified == c.modified)
+                })
+                .collect();
+            if !fresh.is_empty() {
+                to_send.push((mapping, fresh));
+            }
+        }
+
+        let mut pending = Vec::new();
+        for (mapping, fresh) in to_send {
+            if self
                 .remote
                 .dir_exists(&mapping.remote)
                 .context("cannot reach the remote")?
             {
+                pending.extend(fresh);
+            } else {
                 summary
                     .problems
                     .push(format!("remote folder does not exist: {}", mapping.remote));
-                continue;
-            }
-            match scan(mapping, self.config, now) {
-                Ok(found) => {
-                    waiting += found.waiting;
-                    summary.settles_at = [summary.settles_at, found.settles_at]
-                        .into_iter()
-                        .flatten()
-                        .min();
-                    pending.extend(found.candidates);
-                }
-                Err(e) => summary.problems.push(format!(
-                    "scanning {} failed: {e:#}",
-                    mapping.local.display()
-                )),
             }
         }
-
-        let pending: Vec<_> = pending
-            .into_iter()
-            .map(|candidate| (ledger_key(self.config, &candidate), candidate))
-            .filter(|(key, c)| {
-                !ledger.is_synced(key, c.size, c.modified)
-                    && !conflicts
-                        .get(key)
-                        .is_some_and(|k| k.size == c.size && k.modified == c.modified)
-            })
-            .collect();
         let mut remaining_files = pending.len();
         let mut remaining_bytes: u64 = pending.iter().map(|(_, c)| c.size).sum();
         self.reporter.update(|status| {
@@ -907,8 +918,17 @@ mod tests {
         assert!(fx.uploads().is_empty());
         let problems = fx.reporter.snapshot().problems;
         assert_eq!(problems.len(), 2);
-        assert!(problems[0].contains("remote folder does not exist"));
-        assert!(problems[1].contains("local folder does not exist"));
+        assert!(problems[0].contains("local folder does not exist"));
+        assert!(problems[1].contains("remote folder does not exist"));
+    }
+
+    #[test]
+    fn a_cycle_with_nothing_new_does_not_ask_the_server() {
+        let mut fx = Fixture::new();
+        // The server would say that the folder is missing, but there is nothing to send.
+        fx.config.mappings[0].remote = "/nope".into();
+        fx.run();
+        assert!(fx.reporter.snapshot().problems.is_empty());
     }
 
     #[test]
@@ -1044,6 +1064,7 @@ mod tests {
     #[test]
     fn many_new_problems_give_one_notification() {
         let mut fx = Fixture::new();
+        fs::write(fx.local.join("a.mkv"), "x").unwrap();
         fx.config.mappings[0].remote = "/nope".into();
         fx.config
             .mappings
