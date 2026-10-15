@@ -3,6 +3,9 @@
 [![CI](https://github.com/shalemore/outbound/actions/workflows/ci.yml/badge.svg)](https://github.com/shalemore/outbound/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/shalemore/outbound)](LICENSE)
 
+> [!WARNING]
+> outbound is in early development. Its design and its documentation are still being worked out, and there may be breaking changes, including to the configuration file, between versions.
+
 A tray app that mirrors **new** files from local folders to a folder on your VPS over ssh. Drop a file into a folder and the rest happens in the background.
 
 - **Nothing to install on the server.** It runs the system `ssh`, so keys, ssh-agent, `~/.ssh/config` and ProxyJump work the way they do in a terminal. The remote only needs a POSIX shell and coreutils (`sha256sum`, `wc`, `mv`).
