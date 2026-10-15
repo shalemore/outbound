@@ -1,5 +1,7 @@
 # outbound
 
+![The tray menu of outbound](docs/tray-menu.png)
+
 [![CI](https://github.com/shalemore/outbound/actions/workflows/ci.yml/badge.svg)](https://github.com/shalemore/outbound/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/shalemore/outbound)](LICENSE)
 
@@ -38,15 +40,9 @@ Run `outbound`. The first run writes a configuration template and lists it as a 
 1. Pick the ssh host in the menu (it lists the aliases of `~/.ssh/config`).
 2. Add a folder: choose the local folder, then the folder on the server, which must already exist.
 
-## Tray menu
+## Tray icon
 
-- **Icon.** A strip on the icon is the progress bar, and its color is the state: teal idle, blue syncing, amber conflicts, red problems, gray paused.
-- **Pause.** It is not remembered after a restart.
-- **SSH host.** Writes the chosen alias to `ssh.destination`.
-- **Folders.** Tick a folder to turn it on or off.
-- **Add folder mapping…** Checks over ssh, as you type, that the folder on the server exists.
-- **Remove folder.** Only edits the configuration. No file is deleted.
-- **Clean up and quit…** See [Clean up](#clean-up).
+A strip on the icon is the progress bar, and its color is the state: teal idle, blue syncing, amber conflicts, red problems, gray paused.
 
 ## Configuration
 
