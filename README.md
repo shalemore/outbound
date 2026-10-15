@@ -21,16 +21,23 @@ scoop bucket add shalemore https://github.com/shalemore/scoop-bucket
 scoop install outbound
 ```
 
-Or download the `.exe` from [Releases](https://github.com/shalemore/outbound/releases) and run it. It is a single portable file. It is not code-signed, so SmartScreen may warn about a browser download; choose "More info", then "Run anyway".
+Or download the portable `.exe` from [Releases](https://github.com/shalemore/outbound/releases) and run it.
+
+> [!NOTE]
+> The `.exe` is not code-signed, so SmartScreen may warn about a browser download. Choose "More info", then "Run anyway". Installing with Scoop avoids this.
 
 ## Quick start
+
+> [!IMPORTANT]
+> The server must run Linux and have `sha256sum`. macOS, BSD and Windows servers are not supported.
+
+> [!NOTE]
+> outbound never asks for a password. Connect to the server once from a terminal first, to accept its host key.
 
 Run `outbound`. The first run writes a configuration template and lists it as a problem in the tray menu. Then:
 
 1. Pick the ssh host in the menu (it lists the aliases of `~/.ssh/config`).
-2. Add a folder: choose the local folder, then the folder on the VPS, which must already exist.
-
-Connect to the host once from a terminal first, to accept its host key. outbound runs `ssh` with `BatchMode`, so it never asks for a password. The server must run Linux and have `sha256sum`; macOS, BSD and Windows servers are not supported, and outbound says so on the first connection.
+2. Add a folder: choose the local folder, then the folder on the server, which must already exist.
 
 ## Tray menu
 
