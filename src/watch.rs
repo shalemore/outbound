@@ -4,7 +4,7 @@
 
 use std::{
     collections::HashSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -87,6 +87,42 @@ impl Watch {
     }
 }
 
+/// Calls `changed` whenever one of `files` is written, created, renamed or deleted, so that an
+/// edit by hand takes effect at once. The folders that hold the files are watched, because an
+/// editor that saves through a temporary file replaces the file itself. A file in a folder that
+/// does not exist is not watched. The watching stops when the returned value is dropped.
+pub fn watch_files(
+    files: &[PathBuf],
+    changed: impl Fn() + Send + 'static,
+) -> Option<RecommendedWatcher> {
+    let wanted: Vec<PathBuf> = files.to_vec();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
+        let Ok(event) = result else { return };
+        if !matches!(event.kind, EventKind::Access(_) | EventKind::Other)
+            && event.paths.iter().any(|path| is_one_of(path, &wanted))
+        {
+            changed();
+        }
+    })
+    .inspect_err(|e| log::warn!("cannot watch the settings files: {e}"))
+    .ok()?;
+    let folders: HashSet<&Path> = files.iter().filter_map(|file| file.parent()).collect();
+    for folder in folders.into_iter().filter(|folder| folder.is_dir()) {
+        if let Err(e) = watcher.watch(folder, RecursiveMode::NonRecursive) {
+            log::warn!("cannot watch {}: {e}", folder.display());
+        }
+    }
+    Some(watcher)
+}
+
+/// Windows paths compare without regard to case.
+fn is_one_of(path: &Path, files: &[PathBuf]) -> bool {
+    let path = path.to_string_lossy().to_lowercase();
+    files
+        .iter()
+        .any(|file| file.to_string_lossy().to_lowercase() == path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, sync::mpsc, time::Duration};
@@ -116,6 +152,25 @@ mod tests {
             receiver.recv_timeout(Duration::from_secs(5)),
             Ok(Command::Changed)
         ));
+    }
+
+    #[test]
+    fn a_settings_file_is_noticed_and_its_neighbours_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let (sender, receiver) = mpsc::channel();
+        let _watcher = watch_files(std::slice::from_ref(&file), move || {
+            let _ = sender.send(());
+        })
+        .unwrap();
+
+        fs::write(dir.path().join("other.txt"), "x").unwrap();
+        assert!(receiver.recv_timeout(Duration::from_millis(500)).is_err());
+
+        // Saved the way many editors do it: written elsewhere, then renamed over the file.
+        fs::write(dir.path().join("config.toml.tmp"), "a = 1").unwrap();
+        fs::rename(dir.path().join("config.toml.tmp"), &file).unwrap();
+        assert!(receiver.recv_timeout(Duration::from_secs(5)).is_ok());
     }
 
     #[test]

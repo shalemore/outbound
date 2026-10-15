@@ -3,9 +3,7 @@ use std::{fs, path::PathBuf};
 /// The host aliases of `~/.ssh/config` that can be used as a destination: wildcard patterns and
 /// negated patterns are skipped. A missing or unreadable file gives an empty list.
 pub fn ssh_hosts() -> Vec<String> {
-    let path =
-        std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".ssh").join("config"));
-    match path.map(fs::read_to_string) {
+    match config_path().map(fs::read_to_string) {
         Some(Ok(text)) => aliases(&text),
         Some(Err(e)) => {
             log::info!("no ssh hosts could be read from ~/.ssh/config: {e}");
@@ -13,6 +11,11 @@ pub fn ssh_hosts() -> Vec<String> {
         }
         None => Vec::new(),
     }
+}
+
+/// `~/.ssh/config`, where the system ssh reads its hosts from.
+pub fn config_path() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".ssh").join("config"))
 }
 
 /// The names in the `Host` lines. Files that are pulled in with `Include` are not read.

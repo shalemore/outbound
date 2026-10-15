@@ -10,7 +10,7 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 /// What a configuration without a server says, also on the very first run.
 const CHOOSE_HOST: &str = "Choose the SSH host, then add a folder, both in this menu";
 
-const TEMPLATE: &str = r#"# outbound configuration. Changes take effect on the next scan.
+const TEMPLATE: &str = r#"# outbound configuration. Changes take effect as soon as the file is saved.
 # A file goes to the recycle bin once the server holds exactly the same content.
 # The tray menu can also set the ssh host and add folder mappings; it writes this file.
 # In paths, use forward slashes (D:/Downloads) or single-quoted strings ('D:\Downloads').

@@ -40,9 +40,14 @@ use crate::{
 };
 
 enum UserEvent {
+    /// The configuration file or ~/.ssh/config was changed.
+    SettingsChanged,
     Refresh,
     Menu(MenuEvent),
-    Notify { title: String, body: String },
+    Notify {
+        title: String,
+        body: String,
+    },
 }
 
 /// What the menu handlers need to reach the rest of the program.
@@ -104,6 +109,18 @@ fn run() -> Result<()> {
         Arc::clone(&control),
     );
 
+    // An edit by hand shows in the menu and takes effect at once, without a restart.
+    let settings_proxy = Mutex::new(event_loop.create_proxy());
+    let settings_files: Vec<PathBuf> = [config::config_path().ok(), hosts::config_path()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let settings_watch = watch::watch_files(&settings_files, move || {
+        if let Ok(proxy) = settings_proxy.lock() {
+            let _ = proxy.send_event(UserEvent::SettingsChanged);
+        }
+    });
+
     let menu_proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = menu_proxy.send_event(UserEvent::Menu(event));
@@ -125,6 +142,14 @@ fn run() -> Result<()> {
                     *control_flow = ControlFlow::Exit;
                 }
             },
+            Event::UserEvent(UserEvent::SettingsChanged) => {
+                // Kept alive by the event loop, which owns this closure.
+                let _ = &settings_watch;
+                if let Some(tray) = &mut app {
+                    tray.load_lists();
+                }
+                let _ = context.commands.send(Command::Changed);
+            }
             Event::UserEvent(UserEvent::Refresh) => {
                 if let Some(tray) = &mut app {
                     tray.refresh(&context.reporter);
@@ -159,11 +184,9 @@ struct Tray {
     host_menu: Submenu,
     /// The hosts of ~/.ssh/config that are currently listed in the submenu.
     hosts: Vec<(CheckMenuItem, String)>,
-    reload_hosts: MenuItem,
     folder_menu: Submenu,
     /// The configured folders that are currently listed in the submenu, by local path.
     folders: Vec<(CheckMenuItem, String)>,
-    reload_folders: MenuItem,
     remove_menu: Submenu,
     /// The configured folders that the submenu can remove, by local path and remote folder.
     removable: Vec<(MenuItem, String, String)>,
@@ -185,9 +208,7 @@ impl Tray {
         let pause_resume = MenuItem::new("Pause", true, None);
         let sync_now = MenuItem::new("Sync now", true, None);
         let host_menu = Submenu::new("SSH host", true);
-        let reload_hosts = MenuItem::new("Reload hosts", true, None);
         let folder_menu = Submenu::new("Folders", true);
-        let reload_folders = MenuItem::new("Reload folders", true, None);
         let remove_menu = Submenu::new("Remove folder", false);
         let add_mapping = MenuItem::new("Add folder…", true, None);
         let autostart =
@@ -231,10 +252,8 @@ impl Tray {
             sync_now,
             host_menu,
             hosts: Vec::new(),
-            reload_hosts,
             folder_menu,
             folders: Vec::new(),
-            reload_folders,
             remove_menu,
             removable: Vec::new(),
             add_mapping,
@@ -267,8 +286,6 @@ impl Tray {
             let none = MenuItem::new("No hosts", false, None);
             let _ = self.host_menu.append(&none);
         }
-        let _ = self.host_menu.append(&PredefinedMenuItem::separator());
-        let _ = self.host_menu.append(&self.reload_hosts);
         let title = match current {
             Some(destination) => format!("SSH host: {destination}"),
             None => "SSH host".to_string(),
@@ -301,7 +318,6 @@ impl Tray {
         self.remove_menu.set_enabled(!mappings.is_empty());
         let _ = self.folder_menu.append(&self.remove_menu);
         let _ = self.folder_menu.append(&self.add_mapping);
-        let _ = self.folder_menu.append(&self.reload_folders);
     }
 
     fn refresh(&mut self, reporter: &Reporter) {
@@ -388,8 +404,6 @@ impl Tray {
             let _ = context.commands.send(Command::Wake);
         } else if id == self.sync_now.id() {
             let _ = context.commands.send(Command::SyncNow);
-        } else if id == self.reload_hosts.id() || id == self.reload_folders.id() {
-            self.load_lists();
         } else if let Some((_, host)) = self.hosts.iter().find(|(item, _)| item.id() == id) {
             match actions::use_host(host) {
                 Ok(()) => {
