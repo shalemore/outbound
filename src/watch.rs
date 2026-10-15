@@ -180,6 +180,11 @@ mod tests {
         let mut watch = Watch::new(sender);
         watch.set_folders(&[dir.path().to_path_buf()]);
         watch.set_folders(&[]);
+        // Windows lets go of a folder a moment after it is no longer watched, and a change in
+        // that moment can still be reported.
+        std::thread::sleep(Duration::from_millis(500));
+        while receiver.try_recv().is_ok() {}
+        watch.acknowledge();
 
         fs::write(dir.path().join("a.mkv"), "x").unwrap();
         assert!(receiver.recv_timeout(Duration::from_millis(500)).is_err());
