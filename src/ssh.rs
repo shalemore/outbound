@@ -1,10 +1,10 @@
 use std::{
     ffi::OsString,
     fs::File,
-    io::{Read, Seek, Write},
+    io::{BufRead, BufReader, Read, Seek, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::OnceLock,
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Mutex, OnceLock},
     time::Instant,
 };
 
@@ -23,6 +23,9 @@ const SPAWN_HINT: &str = "cannot start ssh, make sure an OpenSSH client is insta
 /// Runs the system ssh, so authentication (ssh-agent, keys, ProxyJump) and known_hosts work the
 /// way they do in a terminal. The remote must be a Linux server with `sh` and `sha256sum`; the
 /// first command of a connection checks that.
+///
+/// The short commands share one connection, which stays open as long as this value lives. An
+/// upload streams over a connection of its own.
 pub struct SshRemote {
     /// The program that is run, and the arguments that precede the ssh options. Normally this is
     /// plain `ssh`; the tests substitute a script that runs the remote command locally.
@@ -33,6 +36,66 @@ pub struct SshRemote {
     identity_file: Option<PathBuf>,
     /// Set once the remote has been found to be supported.
     supported: OnceLock<()>,
+    session: Mutex<Option<Session>>,
+}
+
+/// A remote `sh` that reads one script after another from its stdin.
+struct Session {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+/// Printed after every script with its exit status, so that the end of its output can be found.
+const END: &str = "--outbound-end--";
+
+impl Session {
+    /// The script runs in a subshell, so that an `exit` in it ends the script and not the session,
+    /// and its errors are part of its output.
+    fn run(&mut self, script: &str) -> Result<(i32, String)> {
+        write!(
+            self.stdin,
+            "(\n{script}\n) 2>&1\nprintf '\\n%s %s\\n' {END} $?\n"
+        )?;
+        self.stdin.flush()?;
+        let mut output = Vec::new();
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if self.stdout.read_until(b'\n', &mut line)? == 0 {
+                bail!("the connection was closed");
+            }
+            if let Some(status) = line.strip_prefix(END.as_bytes()) {
+                let status = String::from_utf8_lossy(status).trim().parse().unwrap_or(-1);
+                // The newline that was printed before the marker is not part of the output.
+                if output.ends_with(b"\n") {
+                    output.pop();
+                }
+                return Ok((status, String::from_utf8_lossy(&output).into_owned()));
+            }
+            output.extend_from_slice(&line);
+        }
+    }
+
+    /// Ends the connection, and returns what ssh said about it, which explains a failure.
+    fn close(mut self) -> String {
+        drop(self.stdin);
+        let _ = self.child.kill();
+        let mut errors = String::new();
+        if let Some(mut stderr) = self.child.stderr.take() {
+            let _ = stderr.read_to_string(&mut errors);
+        }
+        let _ = self.child.wait();
+        errors.trim().to_string()
+    }
+}
+
+impl Drop for SshRemote {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.get_mut().ok().and_then(Option::take) {
+            session.close();
+        }
+    }
 }
 
 impl SshRemote {
@@ -44,6 +107,7 @@ impl SshRemote {
             port: ssh.port,
             identity_file: ssh.identity_file.clone(),
             supported: OnceLock::new(),
+            session: Mutex::new(None),
         }
     }
 
@@ -99,6 +163,34 @@ impl SshRemote {
     }
 
     fn run_unchecked(&self, script: &str) -> Result<String> {
+        let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        if session.is_none() {
+            *session = Some(self.open_session()?);
+        }
+        let result = session.as_mut().map(|open| open.run(script));
+        match result {
+            Some(Ok((0, output))) => Ok(output),
+            Some(Ok((status, output))) => {
+                bail!(
+                    "a command on the remote failed ({status}): {}",
+                    output.trim()
+                )
+            }
+            // The connection is gone. Whatever ssh said is the better explanation, and the next
+            // command connects again.
+            Some(Err(e)) => {
+                let said = session.take().map(Session::close).unwrap_or_default();
+                if said.is_empty() {
+                    Err(e.context("ssh failed"))
+                } else {
+                    bail!("ssh failed: {said}")
+                }
+            }
+            None => unreachable!("the session was opened above"),
+        }
+    }
+
+    fn open_session(&self) -> Result<Session> {
         let mut child = self
             .command()
             .args(["sh", "-s"])
@@ -107,20 +199,16 @@ impl SshRemote {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| Permanent(format!("{SPAWN_HINT}: {e}")))?;
-        child
-            .stdin
+        let stdin = child.stdin.take().context("cannot open the stdin of ssh")?;
+        let stdout = child
+            .stdout
             .take()
-            .context("cannot open the stdin of ssh")?
-            .write_all(script.as_bytes())?;
-        let output = child.wait_with_output()?;
-        if !output.status.success() {
-            bail!(
-                "ssh failed ({}): {}",
-                output.status,
-                stderr_text(&output.stderr)
-            );
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+            .context("cannot open the stdout of ssh")?;
+        Ok(Session {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        })
     }
 
     /// Removes the remote temporary file when it can no longer be resumed. If this fails too it
@@ -562,6 +650,30 @@ mod tests {
             ..root
         };
         assert_eq!(deep.parent_path().as_deref(), Some("/data/"));
+    }
+
+    /// Talks to a real server through one session. Run it with the ssh destination in
+    /// OUTBOUND_TEST_HOST: `cargo test --release real_server -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn real_server() {
+        let destination = std::env::var("OUTBOUND_TEST_HOST").expect("OUTBOUND_TEST_HOST");
+        let remote = SshRemote::new(&config::Ssh {
+            destination,
+            port: None,
+            identity_file: None,
+        });
+        for round in 1..=3 {
+            let started = Instant::now();
+            let home = remote.home_dir().unwrap();
+            let browse = remote.browse(&format!("{home}/")).unwrap();
+            assert!(browse.exists);
+            eprintln!(
+                "round {round}: {:?}, {} folders",
+                started.elapsed(),
+                browse.folders.len()
+            );
+        }
     }
 
     #[test]
