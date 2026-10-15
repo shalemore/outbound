@@ -123,6 +123,8 @@ struct Scan {
     candidates: Vec<Candidate>,
     /// Files that were modified so recently that they are probably still being written.
     waiting: usize,
+    /// When the first of those has been left alone long enough, in seconds since the epoch.
+    settles_at: Option<u64>,
 }
 
 pub struct Conflict {
@@ -188,6 +190,8 @@ struct Summary {
     problems: Vec<String>,
     uploaded: usize,
     uploaded_bytes: u64,
+    /// When the first file that is still being written has been left alone long enough.
+    settles_at: Option<u64>,
 }
 
 /// What happened to one file.
@@ -201,7 +205,14 @@ impl Engine<'_> {
     /// One sync cycle: check both folders, scan for new files, then compare and upload them one
     /// by one. A failing file is recorded as a problem and the rest continue; if the remote
     /// cannot be reached the whole cycle is abandoned.
-    pub fn run_cycle(&self, ledger: &mut Ledger, conflicts: &mut Conflicts, now: u64) {
+    /// Returns when the first file that was still being written can be uploaded, in seconds since
+    /// the epoch, so that the next cycle can be started at that moment.
+    pub fn run_cycle(
+        &self,
+        ledger: &mut Ledger,
+        conflicts: &mut Conflicts,
+        now: u64,
+    ) -> Option<u64> {
         self.reporter.update(|status| {
             status.syncing = true;
             status.transfer = None;
@@ -217,6 +228,7 @@ impl Engine<'_> {
             },
         };
 
+        let settles_at = summary.settles_at;
         let conflict_lines: Vec<String> = conflicts
             .iter()
             .map(|(key, conflict)| format!("{} — {}", display_path(key), conflict.reason))
@@ -242,6 +254,7 @@ impl Engine<'_> {
             self.notify_new("conflict", &new_conflicts);
             self.notify_new("problem", &new_problems);
         }
+        settles_at
     }
 
     /// One notification per kind, so that a burst of failures does not flood the screen.
@@ -282,6 +295,10 @@ impl Engine<'_> {
             match scan(mapping, self.config, now) {
                 Ok(found) => {
                     waiting += found.waiting;
+                    summary.settles_at = [summary.settles_at, found.settles_at]
+                        .into_iter()
+                        .flatten()
+                        .min();
                     pending.extend(found.candidates);
                 }
                 Err(e) => summary.problems.push(format!(
@@ -542,6 +559,7 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
     let settle_secs = mapping.settle_secs(config);
     let mut candidates = Vec::new();
     let mut waiting = 0;
+    let mut settles_at: Option<u64> = None;
 
     for entry in WalkDir::new(&mapping.local).sort_by_file_name() {
         let entry = match entry {
@@ -562,6 +580,8 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
         // A file that was modified recently is most likely still being downloaded.
         if now.saturating_sub(modified) < settle_secs {
             waiting += 1;
+            let at = modified + settle_secs;
+            settles_at = Some(settles_at.map_or(at, |first| first.min(at)));
             continue;
         }
         let Some(relative) = relative_remote_path(&mapping.local, entry.path()) else {
@@ -582,6 +602,7 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
     Ok(Scan {
         candidates,
         waiting,
+        settles_at,
     })
 }
 
@@ -754,7 +775,7 @@ mod tests {
             }
         }
 
-        fn run(&mut self) {
+        fn run(&mut self) -> Option<u64> {
             let trash = |path: &Path| -> Result<()> {
                 if self.trash_fails.get() {
                     bail!("the trash is unavailable");
@@ -781,7 +802,7 @@ mod tests {
                 },
                 reporter: &self.reporter,
             }
-            .run_cycle(&mut self.ledger, &mut self.conflicts, now_secs());
+            .run_cycle(&mut self.ledger, &mut self.conflicts, now_secs())
         }
 
         fn waited(&self) -> Duration {
@@ -899,8 +920,18 @@ mod tests {
 
         fx.config.settle_secs = 3600;
         fs::write(fx.local.join("fresh.mkv"), "x").unwrap();
-        fx.run();
+        let settles_at = fx.run();
         assert!(fx.uploads().is_empty());
+        // The file can be uploaded an hour after it was written, and the cycle says so.
+        let settles_at = settles_at.expect("a file is still being written");
+        assert!((now_secs() + 3590..=now_secs() + 3600).contains(&settles_at));
+    }
+
+    #[test]
+    fn nothing_is_waiting_when_all_files_have_settled() {
+        let mut fx = Fixture::new();
+        fs::write(fx.local.join("a.mkv"), "x").unwrap();
+        assert_eq!(fx.run(), None);
     }
 
     #[test]

@@ -13,6 +13,7 @@ mod remote_dialog;
 mod ssh;
 mod status;
 mod sync;
+mod watch;
 mod worker;
 
 use std::{
@@ -109,6 +110,7 @@ fn run() -> Result<()> {
     worker::spawn(
         reporter.clone(),
         command_receiver,
+        commands.clone(),
         notifier,
         Arc::clone(&control),
     );

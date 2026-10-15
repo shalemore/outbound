@@ -1,11 +1,12 @@
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, RecvTimeoutError},
+        mpsc::{Receiver, RecvTimeoutError, Sender},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -14,9 +15,16 @@ use crate::{
     ssh::SshRemote,
     status::Reporter,
     sync::{Conflicts, Engine, now_secs},
+    watch::Watch,
 };
 
 const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
+/// How long after the first change a cycle starts, so that the files of a burst are scanned
+/// together.
+const CHANGE_DELAY: Duration = Duration::from_secs(3);
+/// The shortest time between the starts of two cycles that changes cause. A file that is being
+/// written changes all the time, and every cycle asks the server about the folders.
+const MIN_CYCLE_GAP: Duration = Duration::from_secs(10);
 
 /// Asks the thread that runs the event loop to show a notification: (title, body).
 pub type Notifier = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -26,6 +34,8 @@ pub enum Command {
     SyncNow,
     /// Look at the pause switch again.
     Wake,
+    /// Something changed in a watched folder.
+    Changed,
 }
 
 /// The pause switch. The UI thread flips it at once, and an upload that is running notices it
@@ -45,17 +55,23 @@ impl Control {
     }
 }
 
-/// Background thread: syncs one cycle every interval. "Sync now" starts the next cycle at once
-/// and makes earlier conflicts be compared again. While paused it does nothing until it is woken.
+/// Background thread: syncs one cycle when something changed in a folder, when a file that was
+/// still being written can be uploaded, and otherwise every interval. "Sync now" starts the next
+/// cycle at once and makes earlier conflicts be compared again. While paused it does nothing until
+/// it is woken.
+///
+/// `events` is the sender of `commands`, for the watcher.
 pub fn spawn(
     reporter: Reporter,
     commands: Receiver<Command>,
+    events: Sender<Command>,
     notify: Notifier,
     control: Arc<Control>,
 ) {
     thread::spawn(move || {
         let mut ledger = Ledger::default();
         let mut conflicts = Conflicts::new();
+        let mut watch = Watch::new(events);
         loop {
             if control.paused() {
                 reporter.update(|status| {
@@ -64,20 +80,62 @@ pub fn spawn(
                     status.transfer = None;
                 });
                 match commands.recv() {
-                    Ok(_) => continue,
+                    Ok(Command::Changed) => watch.acknowledge(),
+                    Ok(_) => {}
                     Err(_) => return,
                 }
+                continue;
             }
             reporter.update(|status| status.paused = false);
 
-            let interval = run_once(&reporter, &notify, &control, &mut ledger, &mut conflicts);
-            match commands.recv_timeout(interval) {
-                Ok(Command::SyncNow) => conflicts.clear(),
-                Ok(Command::Wake) | Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
+            let started = Instant::now();
+            let cycle = run_once(&reporter, &notify, &control, &mut ledger, &mut conflicts);
+            watch.set_folders(&cycle.folders);
+
+            let mut wake = Instant::now() + cycle.interval;
+            if let Some(settles_at) = cycle.settles_at {
+                // The first file that was still being written can be uploaded then, and there is
+                // no reason to wait for the next scan.
+                let wait = Duration::from_secs(settles_at.saturating_sub(now_secs()) + 1);
+                wake = wake.min(Instant::now() + wait);
+            }
+            let mut changed_at = None;
+            loop {
+                let target = changed_at.map_or(wake, |at: Instant| at.min(wake));
+                let Some(remaining) = target.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                match commands.recv_timeout(remaining) {
+                    Ok(Command::SyncNow) => {
+                        conflicts.clear();
+                        break;
+                    }
+                    Ok(Command::Wake) | Err(RecvTimeoutError::Timeout) => break,
+                    Ok(Command::Changed) => {
+                        watch.acknowledge();
+                        changed_at.get_or_insert_with(|| change_due(Instant::now(), started));
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
             }
         }
     });
+}
+
+/// When the cycle that a change causes starts: a moment after the change, but not sooner than a
+/// minimum time after the last cycle started.
+fn change_due(now: Instant, last_cycle_started: Instant) -> Instant {
+    (now + CHANGE_DELAY).max(last_cycle_started + MIN_CYCLE_GAP)
+}
+
+/// What a cycle says about the next one.
+struct Cycle {
+    /// The time until the next scan, when nothing makes it earlier.
+    interval: Duration,
+    /// The folders that are watched.
+    folders: Vec<PathBuf>,
+    /// When the first file that was still being written can be uploaded.
+    settles_at: Option<u64>,
 }
 
 /// The configuration is read again on every cycle, so editing it needs no restart.
@@ -87,7 +145,7 @@ fn run_once(
     control: &Control,
     ledger: &mut Ledger,
     conflicts: &mut Conflicts,
-) -> Duration {
+) -> Cycle {
     let config = config::config_path().and_then(|path| Config::load(&path));
     match config {
         Ok(config) => {
@@ -100,15 +158,48 @@ fn run_once(
                 sleep: &thread::sleep,
                 reporter,
             };
-            engine.run_cycle(ledger, conflicts, now_secs());
-            Duration::from_secs(config.scan_interval_secs)
+            let settles_at = engine.run_cycle(ledger, conflicts, now_secs());
+            Cycle {
+                interval: Duration::from_secs(config.scan_interval_secs),
+                folders: config
+                    .mappings
+                    .iter()
+                    .filter(|mapping| mapping.enabled)
+                    .map(|mapping| mapping.local.clone())
+                    .collect(),
+                settles_at,
+            }
         }
         Err(e) => {
             // Without a readable configuration there is no setting to turn notifications off.
             for problem in reporter.set_problems(vec![format!("{e:#}")]) {
                 notify("Problem", &problem);
             }
-            FALLBACK_INTERVAL
+            Cycle {
+                interval: FALLBACK_INTERVAL,
+                folders: Vec::new(),
+                settles_at: None,
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_change_starts_a_cycle_after_a_short_delay() {
+        let long_ago = Instant::now() - Duration::from_secs(3600);
+        let now = Instant::now();
+        assert_eq!(change_due(now, long_ago), now + CHANGE_DELAY);
+    }
+
+    #[test]
+    fn changes_cannot_start_cycles_too_close_together() {
+        let now = Instant::now();
+        // The last cycle started a second ago.
+        let started = now - Duration::from_secs(1);
+        assert_eq!(change_due(now, started), started + MIN_CYCLE_GAP);
     }
 }

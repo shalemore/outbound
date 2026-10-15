@@ -12,6 +12,7 @@ const TEMPLATE: &str = r#"# outbound configuration. Changes take effect on the n
 # In paths, use forward slashes (D:/Downloads) or single-quoted strings ('D:\Downloads').
 
 # Optional settings. The values below are the defaults. They must stay above the first table.
+# How often every folder is scanned. New files are also noticed as soon as they appear.
 # scan_interval_secs = 30
 # A file is uploaded only after it has not been modified for this many seconds.
 # settle_secs = 60

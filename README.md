@@ -50,7 +50,7 @@ A strip on the icon is the progress bar, and its color is the state: teal idle, 
 
 ```toml
 # Global settings, all optional (defaults shown). Keep them above the first table.
-scan_interval_secs = 30
+scan_interval_secs = 30       # folders are also watched, so new files are noticed at once
 settle_secs = 60              # upload a file once it has been left alone this long
 ignored_extensions = ["part", "crdownload", "tmp", "!qb", "aria2", "downloading", "opdownload"]
 after_upload = "keep"         # "trash" moves the local file to the recycle bin
