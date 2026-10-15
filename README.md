@@ -8,7 +8,7 @@
 
 A Windows tray app that mirrors **new** files from local folders to a folder on a Linux server over ssh.
 
-- **Agentless.** Uses your system `ssh`, so nothing is installed on the server.
+- **No server setup.** It uses your system `ssh`, so nothing is installed on the server.
 - **Verified.** Every upload is checked with sha256 before it appears.
 - **Resumable.** An interrupted upload continues where it stopped, and failures are retried.
 - **Never overwrites.** A different file with the same name is a conflict, not a replacement.
