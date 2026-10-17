@@ -233,7 +233,7 @@ impl SshRemote {
         let listed = listed_folder(path);
         let script = format!(
             "if [ -d {} ]; then echo yes; else echo no; fi
-             ls -1Ap {} 2>/dev/null | sed -n 's|/$||p'
+             ls -1ApL {} 2>/dev/null | sed -n 's|/$||p'
 ",
             sh_quote(path),
             sh_quote(&listed)
