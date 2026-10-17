@@ -19,6 +19,7 @@ mod worker;
 
 use std::{
     fs::{self, File},
+    panic,
     path::{Path, PathBuf},
     process,
     sync::{
@@ -93,6 +94,8 @@ fn run() -> Result<()> {
         return Ok(());
     }
     logfile::init(&data_dir.join("outbound.log"))?;
+    // The program has no console, so without this a panic would leave no trace.
+    panic::set_hook(Box::new(|info| log::error!("panic: {info}")));
     autostart::refresh();
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();

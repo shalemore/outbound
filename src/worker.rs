@@ -1,4 +1,6 @@
 use std::{
+    any::Any,
+    panic::{self, AssertUnwindSafe},
     path::PathBuf,
     sync::{
         Arc,
@@ -89,7 +91,24 @@ pub fn spawn(
             reporter.update(|status| status.paused = false);
 
             let started = Instant::now();
-            let cycle = run_once(&reporter, &notify, &control, &mut conflicts);
+            let cycle = guarded(|| run_once(&reporter, &notify, &control, &mut conflicts))
+                .unwrap_or_else(|message| {
+                    // The thread would end, and the tray would show the last state for ever.
+                    log::error!("a cycle panicked: {message}");
+                    for problem in reporter.set_problems(vec![format!("internal error: {message}")])
+                    {
+                        notify("Problem", &problem);
+                    }
+                    reporter.update(|status| {
+                        status.syncing = false;
+                        status.transfer = None;
+                    });
+                    Cycle {
+                        interval: FALLBACK_INTERVAL,
+                        folders: Vec::new(),
+                        settles_at: None,
+                    }
+                });
             watch.set_folders(&cycle.folders);
 
             let mut wake = Instant::now() + cycle.interval;
@@ -125,6 +144,19 @@ pub fn spawn(
             }
         }
     });
+}
+
+/// Runs the work and turns a panic in it into its message.
+fn guarded<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    panic::catch_unwind(AssertUnwindSafe(work)).map_err(|payload| panic_message(&*payload))
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Drops the commands that piled up while a cycle was running, because the cycle that starts now
@@ -216,6 +248,17 @@ mod tests {
         }
         drain(&receiver, &watch);
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_panic_becomes_a_message() {
+        assert_eq!(guarded(|| 7), Ok(7));
+        assert_eq!(guarded(|| -> u8 { panic!("broken") }), Err("broken".into()));
+        let number = 3;
+        assert_eq!(
+            guarded(|| -> u8 { panic!("broken {number}") }),
+            Err("broken 3".into())
+        );
     }
 
     #[test]
