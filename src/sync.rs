@@ -168,6 +168,23 @@ pub struct Conflict {
 /// again.
 pub type Conflicts = BTreeMap<String, Conflict>;
 
+/// What the cycles remember from one to the next.
+#[derive(Default)]
+pub struct Memory {
+    pub conflicts: Conflicts,
+    /// Files that are on the remote but could not be moved to the trash, by file key, with the
+    /// size and modification time they had. The remote copy was verified, so the next try goes
+    /// straight to the trash and does not read both files again.
+    pub unrecycled: BTreeMap<String, (u64, u64)>,
+}
+
+impl Memory {
+    /// Forgets everything, so that every file is compared again.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 enum Decision {
     Upload,
     AlreadySynced,
@@ -246,7 +263,7 @@ impl Engine<'_> {
     /// cannot be reached the whole cycle is abandoned.
     /// Returns when the first file that was still being written can be uploaded, in seconds since
     /// the epoch, so that the next cycle can be started at that moment.
-    pub fn run_cycle(&self, conflicts: &mut Conflicts, now: u64) -> Option<u64> {
+    pub fn run_cycle(&self, memory: &mut Memory, now: u64) -> Option<u64> {
         self.reporter.update(|status| {
             status.syncing = true;
             status.transfer = None;
@@ -254,7 +271,7 @@ impl Engine<'_> {
             status.finished = 0;
         });
 
-        let summary = match self.cycle(conflicts, now) {
+        let summary = match self.cycle(memory, now) {
             Ok(summary) => summary,
             Err(e) => Summary {
                 problems: vec![format!("{e:#}")],
@@ -263,7 +280,8 @@ impl Engine<'_> {
         };
 
         let settles_at = summary.settles_at;
-        let conflict_lines: Vec<ConflictLine> = conflicts
+        let conflict_lines: Vec<ConflictLine> = memory
+            .conflicts
             .iter()
             .map(|(key, conflict)| ConflictLine {
                 text: format!("{} — {}", display_path(key), conflict.reason),
@@ -306,7 +324,7 @@ impl Engine<'_> {
         }
     }
 
-    fn cycle(&self, conflicts: &mut Conflicts, now: u64) -> Result<Summary> {
+    fn cycle(&self, memory: &mut Memory, now: u64) -> Result<Summary> {
         let mut summary = Summary::default();
         let mut waiting = 0;
 
@@ -349,7 +367,8 @@ impl Engine<'_> {
             let fresh: Vec<_> = keyed
                 .into_iter()
                 .filter(|(key, c)| {
-                    !conflicts
+                    !memory
+                        .conflicts
                         .get(key)
                         .is_some_and(|k| k.size == c.size && k.modified == c.modified)
                 })
@@ -362,7 +381,8 @@ impl Engine<'_> {
         // A conflict whose file was moved, deleted or is no longer sent has been resolved. This is
         // only known when every folder could be looked at.
         if every_folder_scanned {
-            conflicts.retain(|key, _| seen.contains(key));
+            memory.conflicts.retain(|key, _| seen.contains(key));
+            memory.unrecycled.retain(|key, _| seen.contains(key));
         }
 
         let mut pending = Vec::new();
@@ -394,7 +414,7 @@ impl Engine<'_> {
             if (self.stop)() {
                 break;
             }
-            let handled = match self.process_with_retries(&key, &candidate, conflicts) {
+            let handled = match self.process_with_retries(&key, &candidate, memory) {
                 Ok(handled) => {
                     failures_in_a_row = 0;
                     Some(handled)
@@ -459,11 +479,11 @@ impl Engine<'_> {
         &self,
         key: &str,
         candidate: &Candidate,
-        conflicts: &mut Conflicts,
+        memory: &mut Memory,
     ) -> Result<Handled> {
         let attempts = self.config.retries + 1;
         for attempt in 1..attempts {
-            match self.process(key, candidate, conflicts) {
+            match self.process(key, candidate, memory) {
                 Err(e) if is_transient(&e) => {
                     let delay = backoff(self.config.retry_delay_secs, attempt);
                     log::warn!(
@@ -487,7 +507,7 @@ impl Engine<'_> {
                 result => return result,
             }
         }
-        self.process(key, candidate, conflicts)
+        self.process(key, candidate, memory)
     }
 
     /// Waits, and gives up with [`Cancelled`] as soon as the work is stopped.
@@ -504,12 +524,25 @@ impl Engine<'_> {
         Ok(())
     }
 
-    fn process(
+    /// Whether this file was found on the remote earlier and only the trash failed. The remote
+    /// file is looked at again, but only its size, because comparing the content of a file of
+    /// many gigabytes in every cycle would keep the disks and the connection busy.
+    fn is_verified_and_unrecycled(
         &self,
         key: &str,
         candidate: &Candidate,
-        conflicts: &mut Conflicts,
-    ) -> Result<Handled> {
+        memory: &Memory,
+    ) -> Result<bool> {
+        if memory.unrecycled.get(key) != Some(&(candidate.size, candidate.modified)) {
+            return Ok(false);
+        }
+        Ok(matches!(
+            self.remote.stat(&candidate.remote)?,
+            RemoteEntry::File { size } if size == candidate.size
+        ))
+    }
+
+    fn process(&self, key: &str, candidate: &Candidate, memory: &mut Memory) -> Result<Handled> {
         let name = file_name(candidate);
         let begin = |phase| {
             self.reporter.update(|status| {
@@ -518,12 +551,16 @@ impl Engine<'_> {
         };
 
         begin(Phase::Checking);
-        let decision = decide(
-            self.remote,
-            candidate,
-            self.stop,
-            &mut progress_callback(self.reporter),
-        )?;
+        let decision = if self.is_verified_and_unrecycled(key, candidate, memory)? {
+            Decision::AlreadySynced
+        } else {
+            decide(
+                self.remote,
+                candidate,
+                self.stop,
+                &mut progress_callback(self.reporter),
+            )?
+        };
         let handled = match decision {
             Decision::Upload => {
                 begin(Phase::Uploading);
@@ -556,7 +593,7 @@ impl Engine<'_> {
             }
             Decision::Conflict(reason) => {
                 log::warn!("conflict at {}: {reason}", candidate.remote);
-                conflicts.insert(
+                memory.conflicts.insert(
                     key.to_string(),
                     Conflict {
                         reason,
@@ -569,7 +606,7 @@ impl Engine<'_> {
             }
         };
 
-        conflicts.remove(key);
+        memory.conflicts.remove(key);
         // A file that was written to while it was sent has newer content than the remote copy,
         // and the trash would lose it. It stays, and the next cycle reports the difference.
         if changed_since_scan(candidate) {
@@ -580,10 +617,15 @@ impl Engine<'_> {
             return Ok(handled);
         }
         // Here the remote is known to hold exactly this content, so the local copy is redundant.
-        // If the trash fails, the file stays, and the next cycle finds the identical remote file
-        // and only retries the trash, without uploading again.
-        (self.trash)(&candidate.local)
-            .context("uploaded, but cannot move the local file to the trash")?;
+        // If the trash fails, the file stays, and the next cycle only retries the trash, without
+        // uploading again.
+        if let Err(e) = (self.trash)(&candidate.local) {
+            memory
+                .unrecycled
+                .insert(key.to_string(), (candidate.size, candidate.modified));
+            return Err(e.context("uploaded, but cannot move the local file to the trash"));
+        }
+        memory.unrecycled.remove(key);
         log::info!("moved {} to the trash", candidate.local.display());
         remove_empty_folders(&candidate.local, &candidate.root);
         Ok(handled)
@@ -792,6 +834,8 @@ mod tests {
         /// The failures the next uploads run into, the last one first.
         failures: RefCell<Vec<Failure>>,
         attempts: Cell<usize>,
+        /// How many times the content of a remote file was asked for.
+        hashes: Cell<usize>,
         /// Rewrites the local file with this content once the upload has read it.
         rewrite_after_upload: RefCell<Option<String>>,
     }
@@ -809,6 +853,7 @@ mod tests {
                 uploads: RefCell::default(),
                 failures: RefCell::default(),
                 attempts: Cell::new(0),
+                hashes: Cell::new(0),
                 rewrite_after_upload: RefCell::default(),
             }
         }
@@ -833,6 +878,7 @@ mod tests {
         }
 
         fn sha256(&self, path: &str) -> Result<String> {
+            self.hashes.set(self.hashes.get() + 1);
             sha256_file(&self.real(path), &|| false, &mut |_| {})
         }
 
@@ -871,7 +917,7 @@ mod tests {
         local: PathBuf,
         remote: FakeRemote,
         config: Config,
-        conflicts: Conflicts,
+        memory: Memory,
         reporter: Reporter,
         trashed: RefCell<Vec<PathBuf>>,
         trash_fails: Cell<bool>,
@@ -907,7 +953,7 @@ mod tests {
                     retry_delay_secs: 2,
                     bandwidth_limit: None,
                 },
-                conflicts: Conflicts::new(),
+                memory: Memory::default(),
                 reporter: Reporter::new(Arc::new(|| {})),
                 trashed: RefCell::default(),
                 trash_fails: Cell::new(false),
@@ -946,7 +992,7 @@ mod tests {
                 },
                 reporter: &self.reporter,
             }
-            .run_cycle(&mut self.conflicts, now_secs())
+            .run_cycle(&mut self.memory, now_secs())
         }
 
         fn waited(&self) -> Duration {
@@ -997,7 +1043,7 @@ mod tests {
 
         fx.run();
         assert!(fx.uploads().is_empty());
-        assert!(fx.conflicts.is_empty());
+        assert!(fx.memory.conflicts.is_empty());
         assert!(fx.reporter.snapshot().problems.is_empty());
     }
 
@@ -1011,7 +1057,7 @@ mod tests {
 
         fx.run();
         assert!(fx.uploads().is_empty());
-        assert_eq!(fx.conflicts.len(), 2);
+        assert_eq!(fx.memory.conflicts.len(), 2);
         assert_eq!(
             fs::read_to_string(fx.remote.real("/videos/size.mkv")).unwrap(),
             "short"
@@ -1021,10 +1067,10 @@ mod tests {
         // An unchanged file is not compared again; once the conflicts are cleared it is compared
         // and reported again.
         fx.run();
-        assert_eq!(fx.conflicts.len(), 2);
-        fx.conflicts.clear();
+        assert_eq!(fx.memory.conflicts.len(), 2);
+        fx.memory.conflicts.clear();
         fx.run();
-        assert_eq!(fx.conflicts.len(), 2);
+        assert_eq!(fx.memory.conflicts.len(), 2);
     }
 
     #[test]
@@ -1039,7 +1085,7 @@ mod tests {
 
         // The next cycle sees different content on the remote and reports it, without overwriting.
         fx.run();
-        assert_eq!(fx.conflicts.len(), 1);
+        assert_eq!(fx.memory.conflicts.len(), 1);
         assert_eq!(
             fs::read_to_string(fx.remote.real("/videos/a.mkv")).unwrap(),
             "old"
@@ -1056,7 +1102,7 @@ mod tests {
 
         fs::remove_file(fx.local.join("a.mkv")).unwrap();
         fx.run();
-        assert!(fx.conflicts.is_empty());
+        assert!(fx.memory.conflicts.is_empty());
         assert!(fx.reporter.snapshot().conflicts.is_empty());
     }
 
@@ -1072,7 +1118,7 @@ mod tests {
             .push(Mapping::new(fx.local.join("missing"), "/videos"));
         fs::remove_file(fx.local.join("a.mkv")).unwrap();
         fx.run();
-        assert_eq!(fx.conflicts.len(), 1);
+        assert_eq!(fx.memory.conflicts.len(), 1);
     }
 
     #[test]
@@ -1121,7 +1167,7 @@ mod tests {
 
         fx.run();
         assert!(fx.uploads().is_empty());
-        assert_eq!(fx.conflicts.len(), 1);
+        assert_eq!(fx.memory.conflicts.len(), 1);
     }
 
     #[test]
@@ -1201,7 +1247,7 @@ mod tests {
         fs::write(fx.local.join("a.mkv"), "version-two").unwrap();
         fx.run();
         assert_eq!(fx.uploads().len(), 1);
-        assert_eq!(fx.conflicts.len(), 1);
+        assert_eq!(fx.memory.conflicts.len(), 1);
     }
 
     #[test]
@@ -1265,7 +1311,7 @@ mod tests {
             "conflicts are never touched"
         );
         assert_eq!(fx.trashed.borrow().len(), 2);
-        assert_eq!(fx.conflicts.len(), 1);
+        assert_eq!(fx.memory.conflicts.len(), 1);
         assert!(fx.reporter.snapshot().problems.is_empty());
     }
 
@@ -1282,8 +1328,14 @@ mod tests {
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("trash"), "{problems:?}");
 
+        // The next try does not compare the content again: the remote copy was verified.
+        fx.run();
+        assert_eq!(fx.remote.hashes.get(), 0);
+        assert_eq!(fx.uploads().len(), 1);
+
         fx.trash_fails.set(false);
         fx.run();
+        assert_eq!(fx.remote.hashes.get(), 0);
         assert_eq!(fx.uploads().len(), 1, "the file must not be uploaded twice");
         assert!(!fx.local.join("a.mkv").exists());
         assert!(fx.reporter.snapshot().problems.is_empty());

@@ -15,7 +15,7 @@ use crate::{
     config::{self, Config},
     ssh::SshRemote,
     status::Reporter,
-    sync::{Conflicts, Engine, now_secs},
+    sync::{Engine, Memory, now_secs},
     watch::Watch,
 };
 
@@ -72,7 +72,7 @@ pub fn spawn(
     control: Arc<Control>,
 ) {
     thread::spawn(move || {
-        let mut conflicts = Conflicts::new();
+        let mut memory = Memory::default();
         let mut watch = Watch::new(events);
         loop {
             if control.paused() {
@@ -91,7 +91,7 @@ pub fn spawn(
             reporter.update(|status| status.paused = false);
 
             let started = Instant::now();
-            let cycle = guarded(|| run_once(&reporter, &notify, &control, &mut conflicts))
+            let cycle = guarded(|| run_once(&reporter, &notify, &control, &mut memory))
                 .unwrap_or_else(|message| {
                     // The thread would end, and the tray would show the last state for ever.
                     log::error!("a cycle panicked: {message}");
@@ -126,7 +126,7 @@ pub fn spawn(
                 };
                 match commands.recv_timeout(remaining) {
                     Ok(Command::SyncNow) => {
-                        conflicts.clear();
+                        memory.clear();
                         drain(&commands, &watch);
                         break;
                     }
@@ -190,7 +190,7 @@ fn run_once(
     reporter: &Reporter,
     notify: &Notifier,
     control: &Arc<Control>,
-    conflicts: &mut Conflicts,
+    memory: &mut Memory,
 ) -> Cycle {
     let config = config::config_path().and_then(|path| Config::load(&path));
     match config {
@@ -207,7 +207,7 @@ fn run_once(
                 sleep: &thread::sleep,
                 reporter,
             };
-            let settles_at = engine.run_cycle(conflicts, now_secs());
+            let settles_at = engine.run_cycle(memory, now_secs());
             Cycle {
                 interval: Duration::from_secs(config.scan_interval_secs),
                 folders: config
