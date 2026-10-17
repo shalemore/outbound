@@ -46,7 +46,7 @@ A strip on the icon is the progress bar, and its color is the state: teal idle, 
 
 ## Configuration
 
-`%APPDATA%\outbound\config.toml`. The menu edits it in place and keeps your comments, and a change, also one made by hand, takes effect within seconds. The log is `%LOCALAPPDATA%\outbound\outbound.log`.
+`%APPDATA%\outbound\config.toml`. The menu edits it in place and keeps your comments, and a change, also one made by hand, takes effect within seconds. The log is `%LOCALAPPDATA%\outbound\outbound.log`; at 5 MiB it becomes `outbound.log.old` and a new one is started.
 
 ```toml
 # Global settings, all optional (defaults shown). Keep them above the first table.
