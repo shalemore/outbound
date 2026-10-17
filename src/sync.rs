@@ -23,6 +23,10 @@ const WAIT_SLICE: Duration = Duration::from_millis(200);
 /// A file whose modification time is further ahead than this was not written by a clock that
 /// agrees with ours, so its time says nothing about whether it is still being written.
 const CLOCK_TOLERANCE_SECS: u64 = 300;
+/// A notification about new problems is not shown again within this time. A connection that
+/// comes and goes gives a new problem every time, and a toast every time would be a nuisance.
+/// The problems stay in the menu.
+const PROBLEM_NOTICE_GAP: Duration = Duration::from_secs(600);
 /// No retry waits longer than this.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// A cycle gives up when this many files in a row fail for a reason that may be the connection.
@@ -179,6 +183,8 @@ pub struct Memory {
     /// Folders that a file was moved out of, with the mapped folder they are in and how long they
     /// must have been left alone before they are removed if they are empty.
     pub emptied: BTreeMap<PathBuf, (PathBuf, u64)>,
+    /// When a notification about problems was last shown.
+    pub problem_noticed: Option<Instant>,
 }
 
 impl Memory {
@@ -311,7 +317,13 @@ impl Engine<'_> {
                 (self.notify)(&title, &human_bytes(summary.uploaded_bytes));
             }
             self.notify_new("conflict", &new_conflicts);
-            self.notify_new("problem", &new_problems);
+            let quiet = memory
+                .problem_noticed
+                .is_none_or(|at| at.elapsed() >= PROBLEM_NOTICE_GAP);
+            if quiet && !new_problems.is_empty() {
+                memory.problem_noticed = Some(Instant::now());
+                self.notify_new("problem", &new_problems);
+            }
         }
         settles_at
     }
@@ -1411,6 +1423,39 @@ mod tests {
             .unwrap();
         fx.run();
         assert!(!folder.exists());
+    }
+
+    #[test]
+    fn new_problems_are_announced_at_most_once_in_a_while() {
+        let mut fx = Fixture::new();
+        let problem_notices = |fx: &Fixture| {
+            fx.titles()
+                .iter()
+                .filter(|title| *title == "Problem")
+                .count()
+        };
+        let fails_once = |fx: &Fixture, name: &str| {
+            fs::write(fx.local.join(name), "x").unwrap();
+            fail(fx, &[Failure::Permanent]);
+        };
+
+        fails_once(&fx, "a.mkv");
+        fx.run();
+        assert_eq!(problem_notices(&fx), 1);
+
+        // The problem goes away and another one comes, soon after.
+        fx.run();
+        assert!(fx.reporter.snapshot().problems.is_empty());
+        fails_once(&fx, "b.mkv");
+        fx.run();
+        assert_eq!(fx.reporter.snapshot().problems.len(), 1);
+        assert_eq!(problem_notices(&fx), 1, "it is in the menu, not in a toast");
+
+        fx.run();
+        fx.memory.problem_noticed = Instant::now().checked_sub(PROBLEM_NOTICE_GAP);
+        fails_once(&fx, "c.mkv");
+        fx.run();
+        assert_eq!(problem_notices(&fx), 2);
     }
 
     #[test]
