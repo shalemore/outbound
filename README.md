@@ -74,7 +74,7 @@ remote = "/data/videos"
 
 - Files on the server are never deleted or modified.
 - A file that conflicts with a different file on the server stays where it is.
-- A folder that is dropped in is sent with everything in it, and removed once it is empty.
+- A folder that is dropped in is sent with everything in it, and removed once it is empty and has been left alone for the settle time.
 - Hidden and system files, such as `desktop.ini` and `Thumbs.db`, are not sent.
 - A `.part` file left on the remote after its source was deleted is not cleaned up.
 

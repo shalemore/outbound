@@ -176,6 +176,9 @@ pub struct Memory {
     /// size and modification time they had. The remote copy was verified, so the next try goes
     /// straight to the trash and does not read both files again.
     pub unrecycled: BTreeMap<String, (u64, u64)>,
+    /// Folders that a file was moved out of, with the mapped folder they are in and how long they
+    /// must have been left alone before they are removed if they are empty.
+    pub emptied: BTreeMap<PathBuf, (PathBuf, u64)>,
 }
 
 impl Memory {
@@ -278,6 +281,7 @@ impl Engine<'_> {
                 ..Summary::default()
             },
         };
+        remove_empty_folders(&mut memory.emptied);
 
         let settles_at = summary.settles_at;
         let conflict_lines: Vec<ConflictLine> = memory
@@ -542,6 +546,23 @@ impl Engine<'_> {
         ))
     }
 
+    /// The folder that held the file may be empty now. It is removed later, once nothing has
+    /// happened in it for as long as a file must be left alone, because a program that is still
+    /// writing into the folder, such as a downloader, would fail if the folder vanished.
+    fn note_emptied(&self, candidate: &Candidate, memory: &mut Memory) {
+        let settle_secs = self
+            .config
+            .mappings
+            .iter()
+            .find(|mapping| mapping.local == candidate.root)
+            .map_or(self.config.settle_secs, |mapping| {
+                mapping.settle_secs(self.config)
+            });
+        if let Some(folder) = candidate.local.parent() {
+            note_folder(&mut memory.emptied, folder, &candidate.root, settle_secs);
+        }
+    }
+
     fn process(&self, key: &str, candidate: &Candidate, memory: &mut Memory) -> Result<Handled> {
         let name = file_name(candidate);
         let begin = |phase| {
@@ -627,7 +648,7 @@ impl Engine<'_> {
         }
         memory.unrecycled.remove(key);
         log::info!("moved {} to the trash", candidate.local.display());
-        remove_empty_folders(&candidate.local, &candidate.root);
+        self.note_emptied(candidate, memory);
         Ok(handled)
     }
 }
@@ -656,17 +677,53 @@ fn is_hidden(entry: &DirEntry) -> bool {
         .is_ok_and(|metadata| metadata.file_attributes() & (HIDDEN | SYSTEM) != 0)
 }
 
+/// Remembers a folder to be removed when it is empty, unless it is the mapped folder itself or
+/// not inside it.
+fn note_folder(
+    emptied: &mut BTreeMap<PathBuf, (PathBuf, u64)>,
+    folder: &Path,
+    root: &Path,
+    settle_secs: u64,
+) {
+    if folder != root && folder.starts_with(root) {
+        emptied.insert(folder.to_path_buf(), (root.to_path_buf(), settle_secs));
+    }
+}
+
 /// A folder that was dropped into a mapped folder is empty once its files went to the trash.
-/// The empty folders are removed, up to but not including the mapped folder. A folder that still
-/// holds anything stays, because only an empty folder can be removed.
-fn remove_empty_folders(file: &Path, root: &Path) {
-    let mut folder = file.parent();
-    while let Some(current) = folder {
-        if current == root || !current.starts_with(root) || fs::remove_dir(current).is_err() {
+/// Such a folder is removed when nothing has happened in it for its settle time, and then the
+/// folder above it is looked at, up to but not including the mapped folder. A folder that holds
+/// anything stays, because only an empty folder can be removed.
+fn remove_empty_folders(emptied: &mut BTreeMap<PathBuf, (PathBuf, u64)>) {
+    let now = now_secs();
+    loop {
+        let due: Vec<_> = emptied
+            .iter()
+            .filter_map(|(folder, (root, settle_secs))| {
+                // A folder that is gone needs no more looking at.
+                let modified = fs::metadata(folder).and_then(|m| m.modified()).ok()?;
+                let modified = modified
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                (now.saturating_sub(modified) >= *settle_secs || modified > now)
+                    .then(|| (folder.clone(), root.clone(), *settle_secs))
+            })
+            .collect();
+        let mut removed_any = false;
+        for (folder, root, settle_secs) in due {
+            emptied.remove(&folder);
+            if fs::remove_dir(&folder).is_ok() {
+                removed_any = true;
+                if let Some(parent) = folder.parent() {
+                    note_folder(emptied, parent, &root, settle_secs);
+                }
+            }
+        }
+        if !removed_any {
             break;
         }
-        folder = current.parent();
     }
+    emptied.retain(|folder, _| folder.is_dir());
 }
 
 fn file_name(candidate: &Candidate) -> String {
@@ -1285,6 +1342,75 @@ mod tests {
         );
         assert!(fx.local.join("keep").exists(), "a folder with a file stays");
         assert!(fx.local.exists(), "the mapped folder itself stays");
+    }
+
+    #[test]
+    fn a_folder_is_removed_only_after_it_was_left_alone() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let age = |path: &Path, seconds: u64| {
+            let file = fs::File::options()
+                .write(true)
+                .custom_flags(BACKUP_SEMANTICS)
+                .open(path)
+                .unwrap();
+            file.set_modified(SystemTime::now() - Duration::from_secs(seconds))
+                .unwrap();
+        };
+        let mut fx = Fixture::new();
+        fx.config.settle_secs = 60;
+        fs::create_dir(fx.local.join("show")).unwrap();
+        let file = fx.local.join("show/e01.mkv");
+        fs::write(&file, "1").unwrap();
+        age(&file, 3600);
+
+        fx.run();
+        assert_eq!(fx.uploads().len(), 1);
+        assert!(
+            fx.local.join("show").exists(),
+            "something happened in the folder a moment ago"
+        );
+
+        // A program that goes on writing into it finds the folder where it was.
+        fs::write(fx.local.join("show/e02.mkv.part"), "x").unwrap();
+        age(&fx.local.join("show"), 3600);
+        fx.run();
+        assert!(fx.local.join("show").exists(), "a folder with a file stays");
+
+        fs::remove_file(fx.local.join("show/e02.mkv.part")).unwrap();
+        fx.run();
+        assert!(fx.local.join("show").exists(), "it is not noted any more");
+    }
+
+    #[test]
+    fn an_emptied_folder_goes_away_when_it_has_been_left_alone() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let mut fx = Fixture::new();
+        fx.config.settle_secs = 60;
+        fs::create_dir(fx.local.join("show")).unwrap();
+        let folder = fx.local.join("show");
+        let file = folder.join("e01.mkv");
+        fs::write(&file, "1").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+
+        fx.run();
+        assert!(folder.exists());
+        fs::File::options()
+            .write(true)
+            .custom_flags(0x0200_0000)
+            .open(&folder)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+        fx.run();
+        assert!(!folder.exists());
     }
 
     #[test]
