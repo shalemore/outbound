@@ -77,6 +77,15 @@ struct State {
     ok: HWND,
     /// The number of the latest question. An answer to an earlier one is out of date.
     question: usize,
+    /// The server is asked one thing at a time, because its answers queue up behind each other.
+    /// True from the moment a question is sent until its answer arrives.
+    in_flight: bool,
+    /// The typing paused while a question was in flight, so the text has not been asked about.
+    lookup_due: bool,
+    /// The text is being checked, and OK is disabled until the answer is in.
+    checking: bool,
+    /// OK was pressed while the text was being checked. The dialog closes if the answer is yes.
+    submit_when_checked: bool,
     /// The latest answer, and the paths that the rows of the list open.
     browse: Option<Browse>,
     choices: Vec<String>,
@@ -99,6 +108,10 @@ pub fn ask(local: &Path, folders: Arc<dyn Folders>) -> Option<String> {
         list: HWND::default(),
         ok: HWND::default(),
         question: 0,
+        in_flight: false,
+        lookup_due: false,
+        checking: false,
+        submit_when_checked: false,
         browse: None,
         choices: Vec::new(),
         result: None,
@@ -286,10 +299,16 @@ unsafe extern "system" fn window_proc(
             WM_ANSWER => {
                 // The box is always taken back, also when the answer is out of date.
                 let answer = *Box::from_raw(lparam.0 as *mut Result<Browse>);
-                if let Some(state) = state_of(window)
-                    && wparam.0 == state.question
-                {
-                    show_answer(state, answer);
+                if let Some(state) = state_of(window) {
+                    state.in_flight = false;
+                    if wparam.0 == state.question {
+                        show_answer(state, answer);
+                        if state.submit_when_checked && IsWindowEnabled(state.ok).as_bool() {
+                            submit(window, state);
+                        }
+                    } else if mem::take(&mut state.lookup_due) {
+                        ask_about_path(window, state);
+                    }
                 }
                 LRESULT(0)
             }
@@ -461,6 +480,8 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
             ID_EDIT if notification == EN_CHANGE => {
                 // Whatever was found for the earlier text no longer applies.
                 state.question += 1;
+                state.checking = true;
+                state.submit_when_checked = false;
                 let _ = EnableWindow(state.ok, false);
                 set_text(state.status, "Checking…");
                 let _ = SetTimer(Some(window), TIMER_LOOKUP, LOOKUP_DELAY_MS, None);
@@ -477,8 +498,10 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
             }
             ID_OK => {
                 if IsWindowEnabled(state.ok).as_bool() {
-                    state.result = Some(text_of(state.edit).trim().to_string());
-                    let _ = DestroyWindow(window);
+                    submit(window, state);
+                } else if state.checking {
+                    // Enter pressed before the server has answered is not lost.
+                    state.submit_when_checked = true;
                 }
             }
             ID_CANCEL => {
@@ -486,6 +509,13 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
             }
             _ => {}
         }
+    }
+}
+
+unsafe fn submit(window: HWND, state: &mut State) {
+    unsafe {
+        state.result = Some(text_of(state.edit).trim().to_string());
+        let _ = DestroyWindow(window);
     }
 }
 
@@ -519,12 +549,19 @@ fn ask_for_home(window: HWND, state: &State) {
     post_answer(window, WM_HOME, 0, move || folders.home());
 }
 
-unsafe fn ask_about_path(window: HWND, state: &State) {
+unsafe fn ask_about_path(window: HWND, state: &mut State) {
     let text = unsafe { text_of(state.edit) };
     let text = text.trim().to_string();
     if text.is_empty() {
+        state.checking = false;
+        unsafe { set_text(state.status, "") };
         return;
     }
+    if state.in_flight {
+        state.lookup_due = true;
+        return;
+    }
+    state.in_flight = true;
     let folders = Arc::clone(&state.folders);
     post_answer(window, WM_ANSWER, state.question, move || {
         folders.browse(&text)
@@ -547,6 +584,7 @@ fn show_home(state: &mut State, home: Result<String>) {
 
 fn show_answer(state: &mut State, answer: Result<Browse>) {
     unsafe {
+        state.checking = false;
         let browse = match answer {
             Ok(browse) => browse,
             Err(e) => {
