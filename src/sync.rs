@@ -486,6 +486,15 @@ impl Engine<'_> {
         };
 
         conflicts.remove(key);
+        // A file that was written to while it was sent has newer content than the remote copy,
+        // and the trash would lose it. It stays, and the next cycle reports the difference.
+        if changed_since_scan(candidate) {
+            log::warn!(
+                "{} changed while it was being sent, so it stays",
+                candidate.local.display()
+            );
+            return Ok(handled);
+        }
         // Here the remote is known to hold exactly this content, so the local copy is redundant.
         // If the trash fails, the file stays, and the next cycle finds the identical remote file
         // and only retries the trash, without uploading again.
@@ -495,6 +504,19 @@ impl Engine<'_> {
         remove_empty_folders(&candidate.local, &candidate.root);
         Ok(handled)
     }
+}
+
+/// Whether the file is no longer the one that was scanned. A file that cannot be read counts as
+/// changed, because it must not be trashed blind.
+fn changed_since_scan(candidate: &Candidate) -> bool {
+    fs::metadata(&candidate.local)
+        .and_then(|metadata| Ok((metadata.len(), metadata.modified()?)))
+        .map_or(true, |(size, modified)| {
+            let modified = modified
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            size != candidate.size || modified != candidate.modified
+        })
 }
 
 /// Windows marks its own files, such as desktop.ini and Thumbs.db, and the lock files of Office
@@ -684,6 +706,8 @@ mod tests {
         /// The failures the next uploads run into, the last one first.
         failures: RefCell<Vec<Failure>>,
         attempts: Cell<usize>,
+        /// Rewrites the local file with this content once the upload has read it.
+        rewrite_after_upload: RefCell<Option<String>>,
     }
 
     #[derive(Clone, Copy)]
@@ -699,6 +723,7 @@ mod tests {
                 uploads: RefCell::default(),
                 failures: RefCell::default(),
                 attempts: Cell::new(0),
+                rewrite_after_upload: RefCell::default(),
             }
         }
 
@@ -743,6 +768,12 @@ mod tests {
             fs::create_dir_all(real.parent().unwrap())?;
             let size = fs::copy(local, real)?;
             progress(size);
+            if let Some(content) = self.rewrite_after_upload.borrow_mut().take() {
+                let file = fs::File::options().write(true).open(local)?;
+                file.set_len(0)?;
+                fs::write(local, content)?;
+                file.set_modified(SystemTime::now() + Duration::from_secs(5))?;
+            }
             self.uploads.borrow_mut().push(remote.to_string());
             Ok(())
         }
@@ -907,6 +938,25 @@ mod tests {
         fx.conflicts.clear();
         fx.run();
         assert_eq!(fx.conflicts.len(), 2);
+    }
+
+    #[test]
+    fn a_file_written_during_the_upload_is_not_trashed() {
+        let mut fx = Fixture::new();
+        fs::write(fx.local.join("a.mkv"), "old").unwrap();
+        *fx.remote.rewrite_after_upload.borrow_mut() = Some("new".into());
+
+        fx.run();
+        assert!(fx.trashed.borrow().is_empty());
+        assert_eq!(fs::read_to_string(fx.local.join("a.mkv")).unwrap(), "new");
+
+        // The next cycle sees different content on the remote and reports it, without overwriting.
+        fx.run();
+        assert_eq!(fx.conflicts.len(), 1);
+        assert_eq!(
+            fs::read_to_string(fx.remote.real("/videos/a.mkv")).unwrap(),
+            "old"
+        );
     }
 
     #[test]
