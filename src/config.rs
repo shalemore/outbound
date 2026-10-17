@@ -249,8 +249,39 @@ impl Config {
         if self.scan_interval_secs == 0 {
             bail!("scan_interval_secs must be greater than zero");
         }
+        self.check_folders_do_not_overlap()
+    }
+
+    /// A folder inside another mapped folder would be scanned twice, and its files queued twice.
+    fn check_folders_do_not_overlap(&self) -> Result<()> {
+        let folders: Vec<(String, &Mapping)> = self
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.enabled)
+            .map(|mapping| (comparable(&mapping.local), mapping))
+            .collect();
+        for (index, (outer, first)) in folders.iter().enumerate() {
+            for (inner, second) in &folders[index + 1..] {
+                let nested = |a: &str, b: &str| a == b || b.starts_with(&format!("{a}/"));
+                if nested(outer, inner) || nested(inner, outer) {
+                    bail!(
+                        "the folders {} and {} overlap, so one of them must be turned off",
+                        first.local.display(),
+                        second.local.display()
+                    );
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// A path for comparing: Windows ignores case, and accepts both kinds of slash.
+fn comparable(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase()
 }
 
 /// `%APPDATA%\outbound\config.toml`
@@ -451,6 +482,27 @@ mod tests {
     fn rejects_relative_remote() {
         let text = MINIMAL.replace("/data/a", "data/a");
         assert!(Config::parse(&text).is_err());
+    }
+
+    #[test]
+    fn rejects_overlapping_folders() {
+        let config = |second: &str, extra: &str| {
+            format!(
+                "[ssh]\ndestination = \"vps\"\n\
+                 [[mapping]]\nlocal = 'D:/Downloads'\nremote = \"/a\"\n\
+                 [[mapping]]\nlocal = '{second}'\nremote = \"/b\"\n{extra}"
+            )
+        };
+        for overlapping in ["D:/Downloads/", r"d:\downloads", r"D:\Downloads\show"] {
+            let error = Config::parse(&config(overlapping, ""))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("overlap"), "{overlapping}: {error}");
+        }
+        // A name that only starts the same way is another folder.
+        Config::parse(&config("D:/Downloads2", "")).unwrap();
+        // A folder that is turned off does not count.
+        Config::parse(&config("D:/Downloads/show", "enabled = false\n")).unwrap();
     }
 
     #[test]
