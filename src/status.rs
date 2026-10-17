@@ -138,8 +138,7 @@ impl Status {
         if self.needs_attention() {
             text = format!("{text}\n{}", self.attention_title());
         }
-        // Windows limits tray tooltips to 127 characters.
-        text.chars().take(120).collect()
+        truncate_utf16(&text, MAX_TOOLTIP_UNITS)
     }
 
     fn state_line(&self) -> String {
@@ -199,6 +198,21 @@ impl Status {
         }
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
+}
+
+/// Windows limits tray tooltips to 127 UTF-16 units. A character outside the basic plane, such
+/// as an emoji in a file name, takes two of them.
+const MAX_TOOLTIP_UNITS: usize = 120;
+
+/// Cuts the text so that it takes at most `max` UTF-16 units, never in the middle of a character.
+fn truncate_utf16(text: &str, max: usize) -> String {
+    let mut units = 0;
+    text.chars()
+        .take_while(|c| {
+            units += c.len_utf16();
+            units <= max
+        })
+        .collect()
 }
 
 /// The longest file name shown in a menu row.
@@ -418,5 +432,17 @@ mod tests {
             ..Status::default()
         };
         assert!(status.tooltip().chars().count() <= 127);
+    }
+
+    #[test]
+    fn tooltip_counts_utf16_units() {
+        let status = Status {
+            retry: Some(format!("Trying {} again in 4s", "😀".repeat(100))),
+            ..Status::default()
+        };
+        let tooltip = status.tooltip();
+        assert!(tooltip.encode_utf16().count() <= 127, "{tooltip}");
+        assert_eq!(truncate_utf16("a😀b", 2), "a");
+        assert_eq!(truncate_utf16("a😀b", 3), "a😀");
     }
 }
