@@ -36,6 +36,9 @@ const TEMPLATE: &str = r#"# outbound configuration. Changes take effect as soon 
 destination = ""
 # port = 22
 # identity_file = "C:/Users/you/.ssh/id_ed25519"
+# The ssh program. By default the OpenSSH that comes with Windows, and otherwise the first ssh in
+# the PATH. Only the OpenSSH of Windows reaches the ssh-agent of Windows.
+# program = "C:/Windows/System32/OpenSSH/ssh.exe"
 
 # Local folder -> folder on the server. Both folders must already exist. The tray menu adds them,
 # and there can be as many as you like; they all run in the background together.
@@ -141,6 +144,7 @@ pub struct Ssh {
     pub destination: String,
     pub port: Option<u16>,
     pub identity_file: Option<PathBuf>,
+    pub program: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -524,7 +528,7 @@ mod tests {
 
     #[test]
     fn every_optional_setting_in_the_template_can_be_enabled() {
-        const OPTIONAL: [&str; 10] = [
+        const OPTIONAL: [&str; 11] = [
             "scan_interval_secs",
             "settle_secs",
             "ignored_extensions",
@@ -535,6 +539,7 @@ mod tests {
             "enabled",
             "port",
             "identity_file",
+            "program",
         ];
         let configured = configured();
         let enabled: Vec<&str> = configured

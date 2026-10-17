@@ -62,6 +62,7 @@ retry_delay_secs = 2          # doubles with every retry, up to a minute
 destination = "user@example.com"   # or an alias from ~/.ssh/config
 # port = 22
 # identity_file = "C:/Users/you/.ssh/id_ed25519"
+# program = "C:/Windows/System32/OpenSSH/ssh.exe"   # the default, if it is installed
 
 [[mapping]]
 local = "D:/Downloads/outbox"

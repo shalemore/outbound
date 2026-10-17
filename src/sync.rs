@@ -1012,6 +1012,7 @@ mod tests {
                         destination: "vps".into(),
                         port: None,
                         identity_file: None,
+                        program: None,
                     },
                     mappings: vec![Mapping::new(local, "/videos")],
                     scan_interval_secs: 30,

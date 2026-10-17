@@ -57,6 +57,20 @@ struct Session {
     lines: Receiver<Vec<u8>>,
 }
 
+/// The OpenSSH that comes with Windows, when it is installed, and otherwise whatever `ssh` the
+/// PATH leads to. Only the OpenSSH of Windows reaches the ssh-agent of Windows, so a PATH with
+/// another ssh in front of it, such as the one of Git for Windows, would behave differently from
+/// the terminal that has the right one.
+fn default_program() -> OsString {
+    windows_openssh(std::env::var_os("SystemRoot").as_deref().map(Path::new))
+        .map_or_else(|| "ssh".into(), PathBuf::into_os_string)
+}
+
+fn windows_openssh(system_root: Option<&Path>) -> Option<PathBuf> {
+    let program = system_root?.join("System32/OpenSSH/ssh.exe");
+    program.is_file().then_some(program)
+}
+
 /// Printed after every script with its exit status, so that the end of its output can be found.
 const END: &str = "--outbound-end--";
 
@@ -124,7 +138,10 @@ impl Drop for SshRemote {
 impl SshRemote {
     pub fn new(ssh: &config::Ssh) -> Self {
         Self {
-            program: "ssh".into(),
+            program: ssh
+                .program
+                .clone()
+                .map_or_else(default_program, PathBuf::into_os_string),
             leading_arguments: Vec::new(),
             destination: ssh.destination.trim().to_string(),
             port: ssh.port,
@@ -745,6 +762,21 @@ mod tests {
     }
 
     #[test]
+    fn the_ssh_of_windows_is_used_when_it_is_installed() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(windows_openssh(Some(root.path())), None);
+        assert_eq!(windows_openssh(None), None);
+
+        let folder = root.path().join("System32/OpenSSH");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("ssh.exe"), "").unwrap();
+        assert_eq!(
+            windows_openssh(Some(root.path())),
+            Some(folder.join("ssh.exe"))
+        );
+    }
+
+    #[test]
     fn lists_the_folder_a_typed_path_points_into() {
         assert_eq!(listed_folder("/data/vid"), "/data");
         assert_eq!(listed_folder("/data/"), "/data");
@@ -835,6 +867,7 @@ mod tests {
             destination,
             port: None,
             identity_file: None,
+            program: None,
         });
         for round in 1..=3 {
             let started = Instant::now();
@@ -1032,6 +1065,7 @@ exec sh -c \"$*\"\n";
                 destination: "fake".into(),
                 port: None,
                 identity_file: None,
+                program: None,
             });
             remote.program = "sh".into();
             // The stand-in runs the scripts here, and this machine need not be Linux.
