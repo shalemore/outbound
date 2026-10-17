@@ -1,6 +1,5 @@
 use std::{
     ffi::OsString,
-    fs::File,
     io::{BufRead, BufReader, Read, Seek, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
@@ -14,7 +13,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     config,
     sync::{
-        CHUNK_SIZE, Cancelled, Permanent, Remote, RemoteEntry, UploadControl, throttle, to_hex,
+        CHUNK_SIZE, Cancelled, Permanent, Remote, RemoteEntry, UploadControl, open_local, throttle,
+        to_hex,
     },
 };
 
@@ -342,7 +342,7 @@ impl Remote for SshRemote {
         let directory = if directory.is_empty() { "/" } else { directory };
         let temp = temp_path(directory, remote);
 
-        let mut file = File::open(local)?;
+        let mut file = open_local(local)?;
         let mut hasher = Sha256::new();
         let offset =
             self.reusable_prefix(&mut file, &mut hasher, &temp, expected_size, progress)?;
@@ -643,6 +643,8 @@ pub fn sh_quote(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+
     use super::*;
 
     fn never() -> bool {

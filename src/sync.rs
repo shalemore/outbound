@@ -101,9 +101,32 @@ impl std::fmt::Display for Permanent {
 
 impl std::error::Error for Permanent {}
 
+/// The error of a file that another program has open and does not share, for example a
+/// downloader that is still writing it. It is not a failure: the file is simply not ready.
+#[derive(Debug)]
+pub struct InUse;
+
+impl std::fmt::Display for InUse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the file is in use by another program")
+    }
+}
+
+impl std::error::Error for InUse {}
+
+/// Opens a local file for reading. A sharing or lock violation becomes [`InUse`].
+pub fn open_local(path: &Path) -> Result<File> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    File::open(path).map_err(|e| match e.raw_os_error() {
+        Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => InUse.into(),
+        _ => anyhow::Error::new(e).context(format!("cannot open {}", path.display())),
+    })
+}
+
 /// Whether a failure may go away by itself, like a dropped connection.
 fn is_transient(error: &anyhow::Error) -> bool {
-    !error.is::<Cancelled>() && !error.is::<Permanent>()
+    !error.is::<Cancelled>() && !error.is::<Permanent>() && !error.is::<InUse>()
 }
 
 /// The wait before retry number `attempt` (1 for the first retry): the base delay, doubled each
@@ -351,6 +374,7 @@ impl Engine<'_> {
         });
 
         let mut failures_in_a_row = 0;
+        let mut in_use = 0;
         for (key, candidate) in pending {
             if (self.stop)() {
                 break;
@@ -362,6 +386,12 @@ impl Engine<'_> {
                 }
                 // Stopped on purpose: the file stays pending and nothing is reported.
                 Err(e) if e.is::<Cancelled>() => break,
+                // Not ready yet, like a file that is still being written.
+                Err(e) if e.is::<InUse>() => {
+                    log::info!("{} is in use, waiting", candidate.local.display());
+                    in_use += 1;
+                    None
+                }
                 Err(e) => {
                     summary
                         .problems
@@ -399,6 +429,10 @@ impl Engine<'_> {
                 );
                 break;
             }
+        }
+        if in_use > 0 {
+            self.reporter
+                .update(|status| status.waiting_files += in_use);
         }
         Ok(summary)
     }
@@ -797,6 +831,7 @@ mod tests {
                 Some(Failure::Permanent) => return Err(Permanent("no ssh".into()).into()),
                 None => {}
             }
+            open_local(local)?;
             let real = self.real(remote);
             fs::create_dir_all(real.parent().unwrap())?;
             let size = fs::copy(local, real)?;
@@ -1019,6 +1054,30 @@ mod tests {
         fs::remove_file(fx.local.join("a.mkv")).unwrap();
         fx.run();
         assert_eq!(fx.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn a_file_another_program_holds_open_is_waited_for_not_reported() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let mut fx = Fixture::new();
+        fs::write(fx.local.join("a.mkv"), "x").unwrap();
+        let held = fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(fx.local.join("a.mkv"))
+            .unwrap();
+
+        fx.run();
+        let status = fx.reporter.snapshot();
+        assert!(status.problems.is_empty(), "{:?}", status.problems);
+        assert_eq!(status.waiting_files, 1);
+        assert_eq!(fx.remote.attempts.get(), 1, "it is not tried again");
+        assert!(fx.waits.borrow().is_empty());
+
+        drop(held);
+        fx.run();
+        assert_eq!(fx.uploads(), ["/videos/a.mkv"]);
     }
 
     #[test]
