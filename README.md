@@ -42,7 +42,7 @@ Run `outbound`. The first run writes a configuration template and lists it as a 
 
 ## Tray icon
 
-A strip on the icon is the progress bar, and its color is the state: teal idle, blue syncing, amber conflicts, red problems, gray paused.
+A strip on the icon is the progress bar, and its color is the state: teal idle, blue syncing, amber conflicts, red problems, gray paused. In the **Problems** submenu, a click on a problem copies its full text, and a click on a conflict shows the file in Explorer.
 
 ## Configuration
 

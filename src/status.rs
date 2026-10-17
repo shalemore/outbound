@@ -1,4 +1,5 @@
 use std::{
+    path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
     time::Instant,
 };
@@ -52,6 +53,13 @@ pub enum IconState {
     Paused,
 }
 
+/// A conflict as the menu lists it: what to say, and the local file it is about.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ConflictLine {
+    pub text: String,
+    pub local: PathBuf,
+}
+
 #[derive(Clone, Default)]
 pub struct Status {
     pub syncing: bool,
@@ -69,7 +77,7 @@ pub struct Status {
     /// Uploaded since the program started.
     pub done_files: usize,
     pub done_bytes: u64,
-    pub conflicts: Vec<String>,
+    pub conflicts: Vec<ConflictLine>,
     pub problems: Vec<String>,
     /// Set while a failed upload waits for its next try.
     pub retry: Option<String>,
@@ -283,6 +291,13 @@ impl Reporter {
 mod tests {
     use super::*;
 
+    fn conflict(text: &str) -> ConflictLine {
+        ConflictLine {
+            text: text.into(),
+            local: PathBuf::from(text),
+        }
+    }
+
     #[test]
     fn formats_bytes() {
         assert_eq!(human_bytes(512), "512 B");
@@ -300,7 +315,7 @@ mod tests {
     fn icon_state_priority() {
         let mut status = Status::default();
         assert!(status.icon_state() == IconState::Idle);
-        status.conflicts.push("x".into());
+        status.conflicts.push(conflict("x"));
         assert!(status.icon_state() == IconState::Warning);
         status.syncing = true;
         assert!(status.icon_state() == IconState::Busy);
@@ -355,7 +370,7 @@ mod tests {
 
         status.problems = vec!["a".into()];
         assert_eq!(status.attention_title(), "1 problem");
-        status.conflicts = vec!["b".into(), "c".into()];
+        status.conflicts = vec![conflict("b"), conflict("c")];
         assert_eq!(status.attention_title(), "1 problem · 2 conflicts");
         status.problems.clear();
         assert_eq!(status.attention_title(), "2 conflicts");

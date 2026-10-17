@@ -3,6 +3,7 @@
 mod actions;
 mod autostart;
 mod cleanup;
+mod clipboard;
 mod config;
 mod dialog;
 mod hosts;
@@ -40,7 +41,7 @@ use tray_icon::{
 
 use crate::{
     actions::Notice,
-    status::{IconState, Reporter, shorten},
+    status::{ConflictLine, IconState, Reporter, shorten},
     worker::{Command, Control},
 };
 
@@ -200,7 +201,9 @@ struct Tray {
     /// Lists the conflicts and the problems. It is disabled while there are none.
     attention_menu: Submenu,
     /// The problems and the conflicts that are currently listed in the submenu.
-    attention: (Vec<String>, Vec<String>),
+    attention: (Vec<String>, Vec<ConflictLine>),
+    /// The rows of the submenu that do something when they are clicked.
+    attention_rows: Vec<(MenuItem, RowAction)>,
     pause_resume: MenuItem,
     sync_now: MenuItem,
     host_menu: Submenu,
@@ -270,6 +273,7 @@ impl Tray {
             details_shown: true,
             attention_menu,
             attention: Default::default(),
+            attention_rows: Vec::new(),
             pause_resume,
             sync_now,
             host_menu,
@@ -397,21 +401,30 @@ impl Tray {
             return;
         }
         while self.attention_menu.remove_at(0).is_some() {}
-        for (label, items) in [("Problems", &lists.0), ("Conflicts", &lists.1)] {
-            if items.is_empty() {
+        self.attention_rows.clear();
+        let problems: Vec<(&String, RowAction)> = lists
+            .0
+            .iter()
+            .map(|text| (text, RowAction::Copy(text.clone())))
+            .collect();
+        let conflicts: Vec<(&String, RowAction)> = lists
+            .1
+            .iter()
+            .map(|line| (&line.text, RowAction::Reveal(line.local.clone())))
+            .collect();
+        for (label, rows) in [("Problems", problems), ("Conflicts", conflicts)] {
+            if rows.is_empty() {
                 continue;
             }
             let _ = self.attention_menu.append(&MenuItem::new(
-                format!("{label} ({})", items.len()),
+                format!("{label} ({})", rows.len()),
                 false,
                 None,
             ));
-            for item in items {
-                let _ = self.attention_menu.append(&MenuItem::new(
-                    shorten(item, MAX_PROBLEM),
-                    false,
-                    None,
-                ));
+            for (text, action) in rows {
+                let row = MenuItem::new(shorten(text, MAX_PROBLEM), true, None);
+                let _ = self.attention_menu.append(&row);
+                self.attention_rows.push((row, action));
             }
         }
         self.attention = lists;
@@ -424,6 +437,9 @@ impl Tray {
             context.control.set_paused(paused);
             context.reporter.update(|status| status.paused = paused);
             let _ = context.commands.send(Command::Wake);
+        } else if let Some((_, action)) = self.attention_rows.iter().find(|(row, _)| row.id() == id)
+        {
+            action.run();
         } else if id == self.sync_now.id() {
             let _ = context.commands.send(Command::SyncNow);
         } else if let Some((_, host)) = self.hosts.iter().find(|(item, _)| item.id() == id) {
@@ -520,6 +536,35 @@ impl Drop for FreeOnDrop {
 fn show_error(message: String) {
     log::warn!("{message}");
     thread::spawn(move || Notice::Error(message).show());
+}
+
+/// What clicking a problem or a conflict in the menu does.
+enum RowAction {
+    /// A problem is cut short in the menu, so the click puts the whole text on the clipboard.
+    Copy(String),
+    /// A conflict is about a file, which is shown in Explorer.
+    Reveal(PathBuf),
+}
+
+impl RowAction {
+    fn run(&self) {
+        match self {
+            Self::Copy(text) => {
+                if let Err(e) = clipboard::copy(text) {
+                    log::warn!("cannot copy to the clipboard: {e:#}");
+                }
+            }
+            Self::Reveal(file) => {
+                let file = file.to_string_lossy().replace('/', "\\");
+                let shown = process::Command::new("explorer")
+                    .arg(format!("/select,{file}"))
+                    .spawn();
+                if let Err(e) = shown {
+                    log::warn!("cannot show {file} in Explorer: {e}");
+                }
+            }
+        }
+    }
 }
 
 /// The longest problem or conflict shown in a menu row. The whole text is in the log.

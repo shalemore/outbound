@@ -13,7 +13,7 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::{
     config::{Config, Mapping},
-    status::{Phase, Reporter, Transfer, human_bytes, plural},
+    status::{ConflictLine, Phase, Reporter, Transfer, human_bytes, plural},
 };
 
 pub const CHUNK_SIZE: usize = 1 << 20;
@@ -159,6 +159,7 @@ struct Scan {
 
 pub struct Conflict {
     reason: String,
+    local: PathBuf,
     size: u64,
     modified: u64,
 }
@@ -262,15 +263,18 @@ impl Engine<'_> {
         };
 
         let settles_at = summary.settles_at;
-        let conflict_lines: Vec<String> = conflicts
+        let conflict_lines: Vec<ConflictLine> = conflicts
             .iter()
-            .map(|(key, conflict)| format!("{} — {}", display_path(key), conflict.reason))
+            .map(|(key, conflict)| ConflictLine {
+                text: format!("{} — {}", display_path(key), conflict.reason),
+                local: conflict.local.clone(),
+            })
             .collect();
         let known_conflicts = self.reporter.snapshot().conflicts;
         let new_conflicts: Vec<String> = conflict_lines
             .iter()
             .filter(|line| !known_conflicts.contains(line))
-            .cloned()
+            .map(|line| line.text.clone())
             .collect();
         let new_problems = self.reporter.set_problems(summary.problems);
         self.reporter.update(|status| {
@@ -556,6 +560,7 @@ impl Engine<'_> {
                     key.to_string(),
                     Conflict {
                         reason,
+                        local: candidate.local.clone(),
                         size: candidate.size,
                         modified: candidate.modified,
                     },
