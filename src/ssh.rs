@@ -2,9 +2,13 @@ use std::{
     ffi::OsString,
     io::{BufRead, BufReader, Read, Seek, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
-    sync::{Mutex, OnceLock},
-    time::Instant,
+    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
+    sync::{
+        Arc, Mutex, OnceLock,
+        mpsc::{self, Receiver, RecvTimeoutError},
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -17,6 +21,9 @@ use crate::{
         to_hex,
     },
 };
+
+/// How often a command that waits for an answer looks at the stop switch.
+const CANCEL_POLL: Duration = Duration::from_millis(200);
 
 const SPAWN_HINT: &str = "cannot start ssh, make sure an OpenSSH client is installed";
 
@@ -37,13 +44,17 @@ pub struct SshRemote {
     /// Set once the remote has been found to be supported.
     supported: OnceLock<()>,
     session: Mutex<Option<Session>>,
+    /// Says true when the work should stop, for example because the user paused it.
+    cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 /// A remote `sh` that reads one script after another from its stdin.
 struct Session {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// The lines of the output, read on a thread of their own so that waiting for them can be
+    /// stopped. The channel closes when the connection does.
+    lines: Receiver<Vec<u8>>,
 }
 
 /// Printed after every script with its exit status, so that the end of its output can be found.
@@ -52,19 +63,23 @@ const END: &str = "--outbound-end--";
 impl Session {
     /// The script runs in a subshell, so that an `exit` in it ends the script and not the session,
     /// and its errors are part of its output.
-    fn run(&mut self, script: &str) -> Result<(i32, String)> {
+    ///
+    /// A server that does not answer would block for ever, so `cancel` is looked at while
+    /// waiting, and the wait ends with [`Cancelled`] when it says true.
+    fn run(&mut self, script: &str, cancel: &dyn Fn() -> bool) -> Result<(i32, String)> {
         write!(
             self.stdin,
             "(\n{script}\n) 2>&1\nprintf '\\n%s %s\\n' {END} $?\n"
         )?;
         self.stdin.flush()?;
         let mut output = Vec::new();
-        let mut line = Vec::new();
         loop {
-            line.clear();
-            if self.stdout.read_until(b'\n', &mut line)? == 0 {
-                bail!("the connection was closed");
-            }
+            let line = match self.lines.recv_timeout(CANCEL_POLL) {
+                Ok(line) => line,
+                Err(RecvTimeoutError::Timeout) if cancel() => return Err(Cancelled.into()),
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => bail!("the connection was closed"),
+            };
             if let Some(status) = line.strip_prefix(END.as_bytes()) {
                 let status = String::from_utf8_lossy(status).trim().parse().unwrap_or(-1);
                 // The newline that was printed before the marker is not part of the output.
@@ -75,6 +90,14 @@ impl Session {
             }
             output.extend_from_slice(&line);
         }
+    }
+
+    /// Ends the connection without waiting for anything else that holds on to it, such as the
+    /// program of a ProxyCommand.
+    fn abort(mut self) {
+        drop(self.stdin);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// Ends the connection, and returns what ssh said about it, which explains a failure.
@@ -93,7 +116,7 @@ impl Session {
 impl Drop for SshRemote {
     fn drop(&mut self) {
         if let Some(session) = self.session.get_mut().ok().and_then(Option::take) {
-            session.close();
+            session.abort();
         }
     }
 }
@@ -108,7 +131,19 @@ impl SshRemote {
             identity_file: ssh.identity_file.clone(),
             supported: OnceLock::new(),
             session: Mutex::new(None),
+            cancel: None,
         }
+    }
+
+    /// Makes the commands that wait for the server stop with [`Cancelled`] when `cancel` says
+    /// true. The connection is closed then, and the next command opens a new one.
+    pub fn with_cancel(mut self, cancel: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|cancel| cancel())
     }
 
     fn command(&self) -> Command {
@@ -167,7 +202,9 @@ impl SshRemote {
         if session.is_none() {
             *session = Some(self.open_session()?);
         }
-        let result = session.as_mut().map(|open| open.run(script));
+        let result = session
+            .as_mut()
+            .map(|open| open.run(script, &|| self.cancelled()));
         match result {
             Some(Ok((0, output))) => Ok(output),
             // The connection works, so asking again gets the same answer.
@@ -176,6 +213,14 @@ impl SshRemote {
                 output.trim()
             ))
             .into()),
+            // The connection is closed, because the answer to the command is still to come and
+            // would be taken for the answer to the next one.
+            Some(Err(e)) if e.is::<Cancelled>() => {
+                if let Some(open) = session.take() {
+                    open.abort();
+                }
+                Err(e)
+            }
             // The connection is gone. Whatever ssh said is the better explanation, and the next
             // command connects again.
             Some(Err(e)) => {
@@ -204,10 +249,22 @@ impl SshRemote {
             .stdout
             .take()
             .context("cannot open the stdout of ssh")?;
+        let (sender, lines) = mpsc::channel();
+        thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            loop {
+                let mut line = Vec::new();
+                match stdout.read_until(b'\n', &mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) if sender.send(line).is_err() => return,
+                    Ok(_) => {}
+                }
+            }
+        });
         Ok(Session {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            lines,
         })
     }
 
@@ -668,6 +725,23 @@ mod tests {
             cancel: &never,
             bytes_per_sec: None,
         }
+    }
+
+    #[test]
+    fn a_command_that_waits_for_the_server_stops_when_asked() {
+        let Some(mut fx) = Fixture::new() else { return };
+        fx.remote.cancel = Some(Arc::new(|| true));
+        let started = Instant::now();
+        let error = fx.remote.run_script("sleep 30\n").unwrap_err();
+        assert!(error.is::<Cancelled>(), "{error:#}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        // The connection that was closed is replaced by a new one.
+        fx.remote.cancel = None;
+        assert_eq!(
+            fx.remote.run_script("echo again\n").unwrap().trim(),
+            "again"
+        );
     }
 
     #[test]

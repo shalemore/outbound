@@ -189,7 +189,7 @@ struct Cycle {
 fn run_once(
     reporter: &Reporter,
     notify: &Notifier,
-    control: &Control,
+    control: &Arc<Control>,
     conflicts: &mut Conflicts,
 ) -> Cycle {
     let config = config::config_path().and_then(|path| Config::load(&path));
@@ -197,7 +197,10 @@ fn run_once(
         Ok(config) => {
             let engine = Engine {
                 config: &config,
-                remote: &SshRemote::new(&config.ssh),
+                remote: &SshRemote::new(&config.ssh).with_cancel({
+                    let control = Arc::clone(control);
+                    Arc::new(move || control.paused())
+                }),
                 trash: &|path| Ok(trash::delete(path)?),
                 notify: &|title, body| notify(title, body),
                 stop: &|| control.paused(),
