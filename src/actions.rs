@@ -66,7 +66,7 @@ pub fn add_folder(commands: &Sender<Command>) {
     };
     match add_mapping(&local, &remote) {
         Ok(Added::New) => {
-            let _ = commands.send(Command::SyncNow);
+            let _ = commands.send(Command::Rescan);
         }
         Ok(Added::AlreadyMapped(existing)) => Notice::Info(format!(
             "{} is already sent to {existing}.",

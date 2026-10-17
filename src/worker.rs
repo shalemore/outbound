@@ -31,6 +31,8 @@ pub type Notifier = Arc<dyn Fn(&str, &str) + Send + Sync>;
 pub enum Command {
     /// Start the next cycle now, and compare earlier conflicts again.
     SyncNow,
+    /// Start the next cycle now, because the configuration changed. Earlier conflicts are kept.
+    Rescan,
     /// Look at the pause switch again.
     Wake,
     /// Something changed in a watched folder.
@@ -106,6 +108,11 @@ pub fn spawn(
                 match commands.recv_timeout(remaining) {
                     Ok(Command::SyncNow) => {
                         conflicts.clear();
+                        drain(&commands, &watch);
+                        break;
+                    }
+                    Ok(Command::Rescan) => {
+                        drain(&commands, &watch);
                         break;
                     }
                     Ok(Command::Wake) | Err(RecvTimeoutError::Timeout) => break,
@@ -118,6 +125,16 @@ pub fn spawn(
             }
         }
     });
+}
+
+/// Drops the commands that piled up while a cycle was running, because the cycle that starts now
+/// answers all of them. Several clicks on "Sync now" must not start several cycles.
+fn drain(commands: &Receiver<Command>, watch: &Watch) {
+    while let Ok(command) = commands.try_recv() {
+        if matches!(command, Command::Changed) {
+            watch.acknowledge();
+        }
+    }
 }
 
 /// When the cycle that a change causes starts: a moment after the change, but not sooner than a
@@ -184,6 +201,22 @@ fn run_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_that_piled_up_are_answered_by_one_cycle() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let watch = Watch::new(sender.clone());
+        for command in [
+            Command::SyncNow,
+            Command::SyncNow,
+            Command::Rescan,
+            Command::Wake,
+        ] {
+            sender.send(command).unwrap();
+        }
+        drain(&receiver, &watch);
+        assert!(receiver.try_recv().is_err());
+    }
 
     #[test]
     fn a_change_starts_a_cycle_after_a_short_delay() {

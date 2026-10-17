@@ -407,7 +407,7 @@ impl Tray {
         } else if let Some((_, host)) = self.hosts.iter().find(|(item, _)| item.id() == id) {
             match actions::use_host(host) {
                 Ok(()) => {
-                    let _ = context.commands.send(Command::SyncNow);
+                    let _ = context.commands.send(Command::Rescan);
                 }
                 Err(e) => Notice::Error(format!("{e:#}")).show(),
             }
@@ -417,7 +417,7 @@ impl Tray {
             // The item has already toggled itself, so its state is the one that was asked for.
             match actions::set_folder_enabled(local, item.is_checked()) {
                 Ok(()) => {
-                    let _ = context.commands.send(Command::SyncNow);
+                    let _ = context.commands.send(Command::Rescan);
                 }
                 Err(e) => Notice::Error(format!("{e:#}")).show(),
             }
@@ -429,7 +429,7 @@ impl Tray {
             if dialog::confirm(&format!("Remove {local}?"), &details, "Remove") {
                 match actions::remove_folder(local) {
                     Ok(()) => {
-                        let _ = context.commands.send(Command::SyncNow);
+                        let _ = context.commands.send(Command::Rescan);
                     }
                     Err(e) => Notice::Error(format!("{e:#}")).show(),
                 }
