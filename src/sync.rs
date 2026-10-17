@@ -20,6 +20,9 @@ pub const CHUNK_SIZE: usize = 1 << 20;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 /// How long a wait lasts at most before it looks at the stop switch again.
 const WAIT_SLICE: Duration = Duration::from_millis(200);
+/// A file whose modification time is further ahead than this was not written by a clock that
+/// agrees with ours, so its time says nothing about whether it is still being written.
+const CLOCK_TOLERANCE_SECS: u64 = 300;
 /// No retry waits longer than this.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// A cycle gives up when this many files in a row fail for a reason that may be the connection.
@@ -696,7 +699,8 @@ fn scan(mapping: &Mapping, config: &Config, now: u64) -> Result<Scan> {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         // A file that was modified recently is most likely still being downloaded.
-        if now.saturating_sub(modified) < settle_secs {
+        let clock_is_off = modified > now + CLOCK_TOLERANCE_SECS;
+        if !clock_is_off && now.saturating_sub(modified) < settle_secs {
             waiting += 1;
             let at = modified + settle_secs;
             settles_at = Some(settles_at.map_or(at, |first| first.min(at)));
@@ -1131,6 +1135,23 @@ mod tests {
         // The file can be uploaded an hour after it was written, and the cycle says so.
         let settles_at = settles_at.expect("a file is still being written");
         assert!((now_secs() + 3590..=now_secs() + 3600).contains(&settles_at));
+    }
+
+    #[test]
+    fn a_file_dated_far_in_the_future_is_not_waited_for_forever() {
+        let mut fx = Fixture::new();
+        fx.config.settle_secs = 60;
+        let day = Duration::from_secs(24 * 3600);
+        for (name, ahead) in [("skewed.mkv", day), ("writing.mkv", Duration::from_secs(5))] {
+            let path = fx.local.join(name);
+            fs::write(&path, "x").unwrap();
+            let file = fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(SystemTime::now() + ahead).unwrap();
+        }
+
+        fx.run();
+        assert_eq!(fx.uploads(), ["/videos/skewed.mkv"]);
+        assert_eq!(fx.reporter.snapshot().waiting_files, 1);
     }
 
     #[test]
