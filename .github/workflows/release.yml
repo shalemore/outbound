@@ -75,12 +75,13 @@ jobs:
       # The notes only list what a user notices, grouped by kind. The type of the commit subject
       # decides: feat, perf and fix, and a "!" after the type marks a breaking change. docs, ci,
       # build, refactor, test and chore commits are left out.
+      # A kind without commits matches nothing, and grep then fails, which must not end the step.
       - name: Tag and create the GitHub release
         run: |
           previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
           section() {
             lines=$(git log ${previous:+"$previous..HEAD"} --no-merges --format=%s \
-              | grep -E "^($2)(\([^)]*\))?$3: " \
+              | { grep -E "^($2)(\([^)]*\))?$3: " || true; } \
               | sed -E 's/^[a-z]+(\([^)]*\))?!?: //; s/^(.)/\U\1/; s/([^.])$/\1./; s/^/* /')
             if [ -n "$lines" ]; then printf '### %s\n\n%s\n\n' "$1" "$lines"; fi
           }
