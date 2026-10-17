@@ -77,10 +77,10 @@ pub struct Status {
 
 impl Status {
     pub fn icon_state(&self) -> IconState {
-        if !self.problems.is_empty() {
-            IconState::Error
-        } else if self.paused {
+        if self.paused {
             IconState::Paused
+        } else if !self.problems.is_empty() {
+            IconState::Error
         } else if self.syncing {
             IconState::Busy
         } else if !self.conflicts.is_empty() {
@@ -304,10 +304,12 @@ mod tests {
         assert!(status.icon_state() == IconState::Warning);
         status.syncing = true;
         assert!(status.icon_state() == IconState::Busy);
-        status.paused = true;
-        assert!(status.icon_state() == IconState::Paused);
         status.problems.push("y".into());
         assert!(status.icon_state() == IconState::Error);
+        // The pause is the user's choice and the icon agrees with the "Paused" in the menu. The
+        // problems stay listed in the menu.
+        status.paused = true;
+        assert!(status.icon_state() == IconState::Paused);
     }
 
     #[test]
