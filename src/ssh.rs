@@ -275,13 +275,14 @@ impl SshRemote {
         hasher: &mut Sha256,
         temp: &str,
         expected_size: u64,
+        cancel: &dyn Fn() -> bool,
         progress: &mut dyn FnMut(u64),
     ) -> Result<u64> {
         let existing = self.partial_size(temp)?;
         if existing == 0 || existing > expected_size {
             return Ok(0);
         }
-        hash_prefix(file, existing, hasher, progress)?;
+        hash_prefix(file, existing, hasher, cancel, progress)?;
         if to_hex(&hasher.clone().finalize()) == self.sha256(temp)? {
             log::info!("resuming an interrupted upload at {existing} of {expected_size} bytes");
             return Ok(existing);
@@ -344,8 +345,14 @@ impl Remote for SshRemote {
 
         let mut file = open_local(local)?;
         let mut hasher = Sha256::new();
-        let offset =
-            self.reusable_prefix(&mut file, &mut hasher, &temp, expected_size, progress)?;
+        let offset = self.reusable_prefix(
+            &mut file,
+            &mut hasher,
+            &temp,
+            expected_size,
+            control.cancel,
+            progress,
+        )?;
 
         let redirect = if offset > 0 { ">>" } else { ">" };
         let mut child = self
@@ -468,16 +475,20 @@ fn pump(
     }
 }
 
-/// Hashes the first `len` bytes of the file.
+/// Hashes the first `len` bytes of the file, and stops with [`Cancelled`] when `cancel` says true.
 fn hash_prefix(
     file: &mut impl Read,
     len: u64,
     hasher: &mut Sha256,
+    cancel: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64),
 ) -> Result<()> {
     let mut buffer = vec![0; CHUNK_SIZE];
     let mut done = 0;
     while done < len {
+        if cancel() {
+            return Err(Cancelled.into());
+        }
         let wanted = usize::try_from((len - done).min(CHUNK_SIZE as u64))?;
         let read = file
             .read(&mut buffer[..wanted])
@@ -870,7 +881,7 @@ has-sha256sum
 
         let mut hasher = Sha256::new();
         let mut file = &data[..];
-        hash_prefix(&mut file, split as u64, &mut hasher, &mut |_| {}).unwrap();
+        hash_prefix(&mut file, split as u64, &mut hasher, &never, &mut |_| {}).unwrap();
         let sent = pump(
             &mut file,
             &mut Vec::new(),
@@ -888,7 +899,7 @@ has-sha256sum
     #[test]
     fn prefix_longer_than_the_file_is_an_error() {
         let mut hasher = Sha256::new();
-        assert!(hash_prefix(&mut &b"abc"[..], 4, &mut hasher, &mut |_| {}).is_err());
+        assert!(hash_prefix(&mut &b"abc"[..], 4, &mut hasher, &never, &mut |_| {}).is_err());
     }
 
     #[test]
@@ -984,6 +995,7 @@ exec sh -c \"$*\"\n";
                     &mut hasher,
                     &self.temp(),
                     self.data.len() as u64,
+                    &never,
                     &mut |_| {},
                 )
                 .unwrap();

@@ -183,12 +183,20 @@ pub fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-pub fn sha256_file(path: &Path, progress: &mut dyn FnMut(u64)) -> Result<String> {
+/// Hashes the file. A `cancel` that says true ends it with [`Cancelled`] before the next chunk.
+pub fn sha256_file(
+    path: &Path,
+    cancel: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64),
+) -> Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; CHUNK_SIZE];
     let mut done = 0;
     loop {
+        if cancel() {
+            return Err(Cancelled.into());
+        }
         let read = file.read(&mut buffer)?;
         if read == 0 {
             return Ok(to_hex(&hasher.finalize()));
@@ -509,6 +517,7 @@ impl Engine<'_> {
         let decision = decide(
             self.remote,
             candidate,
+            self.stop,
             &mut progress_callback(self.reporter),
         )?;
         let handled = match decision {
@@ -632,6 +641,7 @@ fn capitalized(word: &str) -> String {
 fn decide(
     remote: &dyn Remote,
     candidate: &Candidate,
+    cancel: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64),
 ) -> Result<Decision> {
     Ok(match remote.stat(&candidate.remote)? {
@@ -644,7 +654,7 @@ fn decide(
             candidate.size
         )),
         RemoteEntry::File { .. } => {
-            let local = sha256_file(&candidate.local, progress)?;
+            let local = sha256_file(&candidate.local, cancel, progress)?;
             if local == remote.sha256(&candidate.remote)? {
                 Decision::AlreadySynced
             } else {
@@ -818,7 +828,7 @@ mod tests {
         }
 
         fn sha256(&self, path: &str) -> Result<String> {
-            sha256_file(&self.real(path), &mut |_| {})
+            sha256_file(&self.real(path), &|| false, &mut |_| {})
         }
 
         fn upload(
@@ -1082,6 +1092,20 @@ mod tests {
         drop(held);
         fx.run();
         assert_eq!(fx.uploads(), ["/videos/a.mkv"]);
+    }
+
+    #[test]
+    fn hashing_stops_when_paused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        fs::write(&path, vec![0u8; 3 * CHUNK_SIZE]).unwrap();
+        let chunks = Cell::new(0);
+        let error = sha256_file(&path, &|| chunks.get() >= 1, &mut |_| {
+            chunks.set(chunks.get() + 1);
+        })
+        .unwrap_err();
+        assert!(error.is::<Cancelled>());
+        assert_eq!(chunks.get(), 1, "it stopped before the second chunk");
     }
 
     #[test]
