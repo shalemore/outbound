@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Read,
     os::windows::fs::MetadataExt,
@@ -275,12 +275,15 @@ impl Engine<'_> {
         // The folders are scanned here first. The server is only asked about a folder that has
         // something to send, so a cycle with nothing new makes no connection at all.
         let mut to_send = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut every_folder_scanned = true;
         for mapping in self.config.mappings.iter().filter(|m| m.enabled) {
             if !mapping.local.is_dir() {
                 summary.problems.push(format!(
                     "local folder does not exist: {}",
                     mapping.local.display()
                 ));
+                every_folder_scanned = false;
                 continue;
             }
             let found = match scan(mapping, self.config, now) {
@@ -290,6 +293,7 @@ impl Engine<'_> {
                         "scanning {} failed: {e:#}",
                         mapping.local.display()
                     ));
+                    every_folder_scanned = false;
                     continue;
                 }
             };
@@ -298,10 +302,14 @@ impl Engine<'_> {
                 .into_iter()
                 .flatten()
                 .min();
-            let fresh: Vec<_> = found
+            let keyed: Vec<_> = found
                 .candidates
                 .into_iter()
                 .map(|candidate| (file_key(self.config, &candidate), candidate))
+                .collect();
+            seen.extend(keyed.iter().map(|(key, _)| key.clone()));
+            let fresh: Vec<_> = keyed
+                .into_iter()
                 .filter(|(key, c)| {
                     !conflicts
                         .get(key)
@@ -311,6 +319,12 @@ impl Engine<'_> {
             if !fresh.is_empty() {
                 to_send.push((mapping, fresh));
             }
+        }
+
+        // A conflict whose file was moved, deleted or is no longer sent has been resolved. This is
+        // only known when every folder could be looked at.
+        if every_folder_scanned {
+            conflicts.retain(|key, _| seen.contains(key));
         }
 
         let mut pending = Vec::new();
@@ -976,6 +990,35 @@ mod tests {
             fs::read_to_string(fx.remote.real("/videos/a.mkv")).unwrap(),
             "old"
         );
+    }
+
+    #[test]
+    fn a_conflict_ends_when_its_file_is_gone() {
+        let mut fx = Fixture::new();
+        fs::write(fx.local.join("a.mkv"), "local").unwrap();
+        fs::write(fx.remote.real("/videos/a.mkv"), "other").unwrap();
+        fx.run();
+        assert_eq!(fx.reporter.snapshot().conflicts.len(), 1);
+
+        fs::remove_file(fx.local.join("a.mkv")).unwrap();
+        fx.run();
+        assert!(fx.conflicts.is_empty());
+        assert!(fx.reporter.snapshot().conflicts.is_empty());
+    }
+
+    #[test]
+    fn conflicts_stay_while_a_folder_cannot_be_looked_at() {
+        let mut fx = Fixture::new();
+        fs::write(fx.local.join("a.mkv"), "local").unwrap();
+        fs::write(fx.remote.real("/videos/a.mkv"), "other").unwrap();
+        fx.run();
+
+        fx.config
+            .mappings
+            .push(Mapping::new(fx.local.join("missing"), "/videos"));
+        fs::remove_file(fx.local.join("a.mkv")).unwrap();
+        fx.run();
+        assert_eq!(fx.conflicts.len(), 1);
     }
 
     #[test]
