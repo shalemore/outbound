@@ -3,12 +3,12 @@ use std::{
     fs::File,
     io::{BufRead, BufReader, Read, Seek, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::{Mutex, OnceLock},
     time::Instant,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -170,12 +170,12 @@ impl SshRemote {
         let result = session.as_mut().map(|open| open.run(script));
         match result {
             Some(Ok((0, output))) => Ok(output),
-            Some(Ok((status, output))) => {
-                bail!(
-                    "a command on the remote failed ({status}): {}",
-                    output.trim()
-                )
-            }
+            // The connection works, so asking again gets the same answer.
+            Some(Ok((status, output))) => Err(Permanent(format!(
+                "a command on the remote failed ({status}): {}",
+                output.trim()
+            ))
+            .into()),
             // The connection is gone. Whatever ssh said is the better explanation, and the next
             // command connects again.
             Some(Err(e)) => {
@@ -380,14 +380,26 @@ impl Remote for SshRemote {
             Ok(sent) => sent,
             // Stopped on purpose, for example by pausing. The partial file stays for the resume.
             Err(e) if e.is::<Cancelled>() => return Err(e),
-            Err(e) => bail!("{e:#} (ssh: {})", stderr_text(&output.stderr)),
+            Err(e) => {
+                let message = format!("{e:#} (ssh: {})", stderr_text(&output.stderr));
+                return Err(if remote_command_failed(&output.status) {
+                    Permanent(message).into()
+                } else {
+                    anyhow!(message)
+                });
+            }
         };
         if !output.status.success() {
-            bail!(
+            let message = format!(
                 "ssh failed ({}): {}",
                 output.status,
                 stderr_text(&output.stderr)
             );
+            return Err(if remote_command_failed(&output.status) {
+                Permanent(message).into()
+            } else {
+                anyhow!(message)
+            });
         }
         if sent != expected_size {
             self.remove_temp(&temp);
@@ -412,6 +424,12 @@ impl Remote for SshRemote {
             _ => bail!("unexpected answer from the remote: {outcome}"),
         }
     }
+}
+
+/// ssh exits with 255 when the connection fails and otherwise with the status of the remote
+/// command. A command that failed, for example for lack of space or permission, fails again.
+fn remote_command_failed(status: &ExitStatus) -> bool {
+    matches!(status.code(), Some(code) if code != 0 && code != 255)
 }
 
 /// Feeds the rest of the local file into the stdin of ssh and hashes it on the way, so the hash

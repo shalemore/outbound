@@ -22,6 +22,9 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 const WAIT_SLICE: Duration = Duration::from_millis(200);
 /// No retry waits longer than this.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+/// A cycle gives up when this many files in a row fail for a reason that may be the connection.
+/// Every further file would only wait through its own retries for the same failure.
+const CIRCUIT_LIMIT: u32 = 2;
 
 pub enum RemoteEntry {
     Missing,
@@ -333,18 +336,27 @@ impl Engine<'_> {
             status.waiting_files = waiting;
         });
 
+        let mut failures_in_a_row = 0;
         for (key, candidate) in pending {
             if (self.stop)() {
                 break;
             }
             let handled = match self.process_with_retries(&key, &candidate, conflicts) {
-                Ok(handled) => Some(handled),
+                Ok(handled) => {
+                    failures_in_a_row = 0;
+                    Some(handled)
+                }
                 // Stopped on purpose: the file stays pending and nothing is reported.
                 Err(e) if e.is::<Cancelled>() => break,
                 Err(e) => {
                     summary
                         .problems
                         .push(format!("{}: {e:#}", candidate.remote));
+                    failures_in_a_row = if is_transient(&e) {
+                        failures_in_a_row + 1
+                    } else {
+                        0
+                    };
                     None
                 }
             };
@@ -366,6 +378,13 @@ impl Engine<'_> {
                     status.done_bytes += candidate.size;
                 }
             });
+            if failures_in_a_row >= CIRCUIT_LIMIT {
+                summary.problems.push(
+                    "stopped after repeated failures, the rest is tried in the next cycle"
+                        .to_string(),
+                );
+                break;
+            }
         }
         Ok(summary)
     }
@@ -1318,6 +1337,47 @@ mod tests {
         assert_eq!(fx.remote.attempts.get(), 1);
         assert!(fx.waits.borrow().is_empty());
         assert_eq!(fx.reporter.snapshot().problems.len(), 1);
+    }
+
+    #[test]
+    fn repeated_failures_end_the_cycle() {
+        let mut fx = Fixture::new();
+        for name in ["a", "b", "c", "d"] {
+            fs::write(fx.local.join(format!("{name}.mkv")), "x").unwrap();
+        }
+        fail(&fx, &[Failure::Transient; 40]);
+
+        fx.run();
+        // Two files used up their tries, and the other two were not even started.
+        assert_eq!(fx.remote.attempts.get(), 8);
+        let problems = fx.reporter.snapshot().problems;
+        assert_eq!(problems.len(), 3);
+        assert!(problems[2].contains("stopped after repeated failures"));
+
+        // The next cycle starts again with every file.
+        fail(&fx, &[]);
+        fx.run();
+        assert_eq!(fx.uploads().len(), 4);
+    }
+
+    #[test]
+    fn only_failures_that_may_be_the_connection_end_the_cycle() {
+        let mut fx = Fixture::new();
+        for name in ["a", "b", "c"] {
+            fs::write(fx.local.join(format!("{name}.mkv")), "x").unwrap();
+        }
+        fx.config.retries = 0;
+        fail(&fx, &[Failure::Transient, Failure::Transient]);
+        // With retries off, a and b are already the limit.
+        fx.run();
+        assert_eq!(fx.remote.attempts.get(), 2);
+        // A permanent failure is about the file, not the connection.
+        fail(
+            &fx,
+            &[Failure::Permanent, Failure::Permanent, Failure::Permanent],
+        );
+        fx.run();
+        assert_eq!(fx.remote.attempts.get(), 5);
     }
 
     #[test]
