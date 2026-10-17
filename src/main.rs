@@ -207,6 +207,8 @@ struct Tray {
     pause_resume: MenuItem,
     sync_now: MenuItem,
     host_menu: Submenu,
+    /// False until the submenus have been filled once, which they need even when they are empty.
+    lists_built: bool,
     /// The hosts of ~/.ssh/config that are currently listed in the submenu.
     hosts: Vec<(CheckMenuItem, String)>,
     folder_menu: Submenu,
@@ -277,6 +279,7 @@ impl Tray {
             pause_resume,
             sync_now,
             host_menu,
+            lists_built: false,
             hosts: Vec::new(),
             folder_menu,
             folders: Vec::new(),
@@ -296,36 +299,68 @@ impl Tray {
     }
 
     /// Fills the SSH host and the folder submenus from ~/.ssh/config and the configuration file.
+    /// A menu that is open is not changed under the mouse: when the same hosts and folders are
+    /// listed as before, only the check marks are set.
     fn load_lists(&mut self) {
         let path = config::config_path().ok();
+        self.load_hosts(path.as_deref());
+        self.load_folders(path.as_deref());
+        self.lists_built = true;
+    }
 
-        while self.host_menu.remove_at(0).is_some() {}
-        self.hosts.clear();
-        let current = path.as_deref().and_then(config::current_destination);
-        for host in hosts::ssh_hosts() {
-            let checked = current.as_deref() == Some(host.as_str());
-            let item = CheckMenuItem::new(&host, true, checked, None);
-            let _ = self.host_menu.append(&item);
-            self.hosts.push((item, host));
-        }
-        if self.hosts.is_empty() {
-            let none = MenuItem::new("No hosts", false, None);
-            let _ = self.host_menu.append(&none);
+    fn load_hosts(&mut self, path: Option<&Path>) {
+        let current = path.and_then(config::current_destination);
+        let wanted = hosts::ssh_hosts();
+        let listed = self.hosts.iter().map(|(_, host)| host);
+        if self.lists_built && listed.eq(wanted.iter()) {
+            for (item, host) in &self.hosts {
+                let checked = current.as_deref() == Some(host.as_str());
+                if item.is_checked() != checked {
+                    item.set_checked(checked);
+                }
+            }
+        } else {
+            while self.host_menu.remove_at(0).is_some() {}
+            self.hosts.clear();
+            for host in wanted {
+                let checked = current.as_deref() == Some(host.as_str());
+                let item = CheckMenuItem::new(&host, true, checked, None);
+                let _ = self.host_menu.append(&item);
+                self.hosts.push((item, host));
+            }
+            if self.hosts.is_empty() {
+                let none = MenuItem::new("No hosts", false, None);
+                let _ = self.host_menu.append(&none);
+            }
         }
         let title = match current {
             Some(destination) => format!("SSH host: {destination}"),
             None => "SSH host".to_string(),
         };
-        self.host_menu.set_text(title);
+        if self.host_menu.text() != title {
+            self.host_menu.set_text(title);
+        }
+    }
+
+    fn load_folders(&mut self, path: Option<&Path>) {
+        let mappings = path.map(config::mappings_overview).unwrap_or_default();
+        let listed = self
+            .removable
+            .iter()
+            .map(|(_, local, remote)| (local, remote));
+        if self.lists_built && listed.eq(mappings.iter().map(|m| (&m.local, &m.remote))) {
+            for ((item, _), mapping) in self.folders.iter().zip(&mappings) {
+                if item.is_checked() != mapping.enabled {
+                    item.set_checked(mapping.enabled);
+                }
+            }
+            return;
+        }
 
         while self.folder_menu.remove_at(0).is_some() {}
         self.folders.clear();
         while self.remove_menu.remove_at(0).is_some() {}
         self.removable.clear();
-        let mappings = path
-            .as_deref()
-            .map(config::mappings_overview)
-            .unwrap_or_default();
         for mapping in &mappings {
             let label = format!("{} → {}", mapping.local, mapping.remote);
             let item = CheckMenuItem::new(&label, true, mapping.enabled, None);
