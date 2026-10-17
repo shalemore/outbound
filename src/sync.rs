@@ -27,6 +27,8 @@ const CLOCK_TOLERANCE_SECS: u64 = 300;
 /// comes and goes gives a new problem every time, and a toast every time would be a nuisance.
 /// The problems stay in the menu.
 const PROBLEM_NOTICE_GAP: Duration = Duration::from_secs(600);
+/// What the problem starts with when the server could not be asked at all.
+const CANNOT_REACH: &str = "cannot reach the remote";
 /// No retry waits longer than this.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// A cycle gives up when this many files in a row fail for a reason that may be the connection.
@@ -403,11 +405,19 @@ impl Engine<'_> {
 
         let mut pending = Vec::new();
         for (mapping, fresh) in to_send {
-            if self
+            let exists = self
                 .remote
                 .dir_exists(&mapping.remote)
-                .context("cannot reach the remote")?
-            {
+                .context(CANNOT_REACH)?;
+            // The list of problems is replaced when the cycle ends, which can be long after this
+            // point. The server has answered now, so what was reported about not reaching it is
+            // out of date, and it must not stay in the menu for the length of the uploads.
+            self.reporter.update(|status| {
+                status
+                    .problems
+                    .retain(|problem| !problem.starts_with(CANNOT_REACH));
+            });
+            if exists {
                 pending.extend(fresh);
             } else {
                 summary
@@ -888,6 +898,7 @@ mod tests {
     use std::{
         cell::{Cell, RefCell},
         fs,
+        rc::Rc,
         sync::Arc,
     };
 
@@ -905,6 +916,10 @@ mod tests {
         attempts: Cell<usize>,
         /// How many times the content of a remote file was asked for.
         hashes: Cell<usize>,
+        /// Makes the server not answer at all.
+        unreachable: Cell<bool>,
+        /// Called when an upload starts.
+        on_upload: RefCell<Option<Box<dyn Fn()>>>,
         /// Rewrites the local file with this content once the upload has read it.
         rewrite_after_upload: RefCell<Option<String>>,
     }
@@ -923,6 +938,8 @@ mod tests {
                 failures: RefCell::default(),
                 attempts: Cell::new(0),
                 hashes: Cell::new(0),
+                unreachable: Cell::new(false),
+                on_upload: RefCell::default(),
                 rewrite_after_upload: RefCell::default(),
             }
         }
@@ -934,6 +951,9 @@ mod tests {
 
     impl Remote for FakeRemote {
         fn dir_exists(&self, path: &str) -> Result<bool> {
+            if self.unreachable.get() {
+                bail!("ssh failed: Permission denied (publickey)");
+            }
             Ok(self.real(path).is_dir())
         }
 
@@ -960,6 +980,9 @@ mod tests {
             progress: &mut dyn FnMut(u64),
         ) -> Result<()> {
             self.attempts.set(self.attempts.get() + 1);
+            if let Some(hook) = &*self.on_upload.borrow() {
+                hook();
+            }
             match self.failures.borrow_mut().pop() {
                 Some(Failure::Transient) => bail!("connection reset"),
                 Some(Failure::Permanent) => return Err(Permanent("no ssh".into()).into()),
@@ -1457,6 +1480,28 @@ mod tests {
         fails_once(&fx, "c.mkv");
         fx.run();
         assert_eq!(problem_notices(&fx), 2);
+    }
+
+    #[test]
+    fn a_problem_about_reaching_the_server_ends_when_it_answers() {
+        let mut fx = Fixture::new();
+        fs::write(fx.local.join("a.mkv"), "x").unwrap();
+        fx.remote.unreachable.set(true);
+        fx.run();
+        let problems = fx.reporter.snapshot().problems;
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].starts_with(CANNOT_REACH), "{problems:?}");
+
+        // The problem is gone while the next cycle is still uploading, not only when it ends.
+        fx.remote.unreachable.set(false);
+        let seen = Rc::new(RefCell::new(None));
+        let (reporter, during) = (fx.reporter.clone(), Rc::clone(&seen));
+        *fx.remote.on_upload.borrow_mut() = Some(Box::new(move || {
+            *during.borrow_mut() = Some(reporter.snapshot().problems);
+        }));
+        fx.run();
+        assert_eq!(seen.borrow().as_ref().map(Vec::len), Some(0));
+        assert!(fx.reporter.snapshot().problems.is_empty());
     }
 
     #[test]
