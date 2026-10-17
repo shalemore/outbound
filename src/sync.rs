@@ -678,7 +678,7 @@ fn progress_callback(reporter: &Reporter) -> impl FnMut(u64) {
             last = Instant::now();
             reporter.update(|status| {
                 if let Some(transfer) = &mut status.transfer {
-                    transfer.done = done;
+                    transfer.advance(done);
                 }
             });
         }

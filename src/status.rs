@@ -1,7 +1,7 @@
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -17,8 +17,14 @@ pub struct Transfer {
     pub file: String,
     pub done: u64,
     pub total: u64,
-    pub started: Instant,
+    /// When and where the speed was last measured.
+    sample: (Instant, u64),
+    speed: Option<f64>,
 }
+
+/// The speed is measured over windows of this length. A resumed upload starts with the bytes it
+/// has skipped, so the speed since the start would be too high.
+const SPEED_WINDOW: Duration = Duration::from_secs(3);
 
 impl Transfer {
     pub fn new(phase: Phase, file: String, total: u64) -> Self {
@@ -27,7 +33,23 @@ impl Transfer {
             file,
             done: 0,
             total,
-            started: Instant::now(),
+            sample: (Instant::now(), 0),
+            speed: None,
+        }
+    }
+
+    /// Records how far the transfer is, and measures the speed once a window has passed.
+    pub fn advance(&mut self, done: u64) {
+        self.advance_at(Instant::now(), done);
+    }
+
+    fn advance_at(&mut self, now: Instant, done: u64) {
+        self.done = done;
+        let (since, before) = self.sample;
+        let elapsed = now.saturating_duration_since(since);
+        if elapsed >= SPEED_WINDOW {
+            self.speed = Some(done.saturating_sub(before) as f64 / elapsed.as_secs_f64());
+            self.sample = (now, done);
         }
     }
 
@@ -39,8 +61,7 @@ impl Transfer {
     }
 
     fn bytes_per_sec(&self) -> Option<f64> {
-        let elapsed = self.started.elapsed().as_secs_f64();
-        (elapsed >= 1.0).then(|| self.done as f64 / elapsed)
+        self.speed
     }
 }
 
@@ -310,6 +331,24 @@ mod tests {
             text: text.into(),
             local: PathBuf::from(text),
         }
+    }
+
+    #[test]
+    fn the_speed_is_measured_over_windows() {
+        let mut transfer = Transfer::new(Phase::Uploading, "a".into(), 1_000_000);
+        let start = transfer.sample.0;
+        let second = Duration::from_secs(1);
+
+        transfer.advance_at(start + second, 1_000);
+        assert_eq!(transfer.bytes_per_sec(), None, "no window has passed yet");
+        transfer.advance_at(start + 3 * second, 6_000);
+        assert_eq!(transfer.bytes_per_sec(), Some(2_000.0));
+        transfer.advance_at(start + 4 * second, 7_000);
+        assert_eq!(transfer.done, 7_000);
+        assert_eq!(transfer.bytes_per_sec(), Some(2_000.0), "same window");
+        // The speed follows the last window, not the average since the start.
+        transfer.advance_at(start + 6 * second, 18_000);
+        assert_eq!(transfer.bytes_per_sec(), Some(4_000.0));
     }
 
     #[test]
