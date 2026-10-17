@@ -20,13 +20,18 @@ use std::{
     fs::{self, File},
     path::{Path, PathBuf},
     process,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
 };
 
 use anyhow::Result;
 use tao::{
     event::{Event, StartCause},
-    event_loop::{ControlFlow, EventLoopBuilder},
+    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
 };
 use tray_icon::{
     TrayIcon, TrayIconBuilder,
@@ -43,6 +48,10 @@ enum UserEvent {
     /// The configuration file or ~/.ssh/config was changed.
     SettingsChanged,
     Refresh,
+    /// A dialog has ended, and it may have changed the configuration.
+    DialogClosed {
+        quit: bool,
+    },
     Menu(MenuEvent),
     Notify {
         title: String,
@@ -55,6 +64,9 @@ struct Context {
     commands: mpsc::Sender<Command>,
     control: Arc<Control>,
     reporter: Reporter,
+    /// True while a dialog that asks something is open. Only one is open at a time.
+    dialog_open: Arc<AtomicBool>,
+    events: EventLoopProxy<UserEvent>,
 }
 
 fn main() {
@@ -130,6 +142,8 @@ fn run() -> Result<()> {
         commands,
         control,
         reporter,
+        dialog_open: Arc::default(),
+        events: event_loop.create_proxy(),
     };
     let mut app: Option<Tray> = None;
     event_loop.run(move |event, _, control_flow| {
@@ -149,6 +163,14 @@ fn run() -> Result<()> {
                     tray.load_lists();
                 }
                 let _ = context.commands.send(Command::Changed);
+            }
+            Event::UserEvent(UserEvent::DialogClosed { quit }) => {
+                if let Some(tray) = &mut app {
+                    tray.load_lists();
+                }
+                if quit {
+                    *control_flow = ControlFlow::Exit;
+                }
             }
             Event::UserEvent(UserEvent::Refresh) => {
                 if let Some(tray) = &mut app {
@@ -409,7 +431,7 @@ impl Tray {
                 Ok(()) => {
                     let _ = context.commands.send(Command::Rescan);
                 }
-                Err(e) => Notice::Error(format!("{e:#}")).show(),
+                Err(e) => show_error(format!("{e:#}")),
             }
             // The check mark of the clicked item toggled by itself, so draw all of them again.
             self.load_lists();
@@ -419,29 +441,34 @@ impl Tray {
                 Ok(()) => {
                     let _ = context.commands.send(Command::Rescan);
                 }
-                Err(e) => Notice::Error(format!("{e:#}")).show(),
+                Err(e) => show_error(format!("{e:#}")),
             }
             self.load_lists();
         } else if let Some((_, local, remote)) =
             self.removable.iter().find(|(item, ..)| item.id() == id)
         {
-            let details = format!("It stops being sent to {remote}. No file is deleted.");
-            if dialog::confirm(&format!("Remove {local}?"), &details, "Remove") {
-                match actions::remove_folder(local) {
-                    Ok(()) => {
-                        let _ = context.commands.send(Command::Rescan);
+            let (local, remote) = (local.clone(), remote.clone());
+            ask_in_dialog(context, move |commands| {
+                let details = format!("It stops being sent to {remote}. No file is deleted.");
+                if dialog::confirm(&format!("Remove {local}?"), &details, "Remove") {
+                    match actions::remove_folder(&local) {
+                        Ok(()) => {
+                            let _ = commands.send(Command::Rescan);
+                        }
+                        Err(e) => Notice::Error(format!("{e:#}")).show(),
                     }
-                    Err(e) => Notice::Error(format!("{e:#}")).show(),
                 }
-                self.load_lists();
-            }
+                false
+            });
         } else if id == self.add_mapping.id() {
-            actions::add_folder(&context.commands);
-            self.load_lists();
+            ask_in_dialog(context, |commands| {
+                actions::add_folder(commands);
+                false
+            });
         } else if id == self.autostart.id() {
             // The item has already toggled itself, so its state is the one that was asked for.
             if let Err(e) = autostart::set(self.autostart.is_checked()) {
-                Notice::Error(format!("cannot change the startup entry: {e}")).show();
+                show_error(format!("cannot change the startup entry: {e}"));
                 self.autostart.set_checked(autostart::is_enabled());
             }
         } else if id == self.open_config.id() {
@@ -449,12 +476,50 @@ impl Tray {
         } else if id == self.open_logs.id() {
             open(config::data_dir());
         } else if id == self.clean_up.id() {
-            return clean_up_and_quit();
+            ask_in_dialog(context, |_| clean_up_and_quit());
         } else if id == self.quit.id() {
             return true;
         }
         false
     }
+}
+
+/// Runs a dialog that asks something on a thread of its own, so that the icon, the menu and the
+/// notifications keep working while it is open, and a second dialog cannot be opened on top of
+/// it. `work` says whether the program should quit afterwards. The lists of the menu are drawn
+/// again when it ends.
+fn ask_in_dialog(
+    context: &Context,
+    work: impl FnOnce(&mpsc::Sender<Command>) -> bool + Send + 'static,
+) {
+    if context.dialog_open.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let (commands, open, events) = (
+        context.commands.clone(),
+        Arc::clone(&context.dialog_open),
+        context.events.clone(),
+    );
+    thread::spawn(move || {
+        // Also set free when `work` panics, so that the menu does not stay locked.
+        let _free = FreeOnDrop(open);
+        let quit = work(&commands);
+        let _ = events.send_event(UserEvent::DialogClosed { quit });
+    });
+}
+
+struct FreeOnDrop(Arc<AtomicBool>);
+
+impl Drop for FreeOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Shows an error without holding up the event loop.
+fn show_error(message: String) {
+    log::warn!("{message}");
+    thread::spawn(move || Notice::Error(message).show());
 }
 
 /// The longest problem or conflict shown in a menu row. The whole text is in the log.
