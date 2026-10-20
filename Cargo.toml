@@ -1,6 +1,6 @@
 [package]
 name = "outbound"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Tray app that moves files from local folders to a Linux server over ssh"
 license = "MIT"
