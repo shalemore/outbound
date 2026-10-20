@@ -1,7 +1,7 @@
 # The C runtime of Visual C++ is linked into the executable, so that it also starts on a Windows
 # without the Visual C++ Redistributable. The Universal C runtime stays a DLL, because Windows 10
 # and 11 always have it, which keeps the executable small.
-[target.x86_64-pc-windows-msvc]
+[target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = [
     "-C", "target-feature=+crt-static",
     "-C", "link-args=/NODEFAULTLIB:libucrt.lib /DEFAULTLIB:ucrt.lib",

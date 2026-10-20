@@ -1,6 +1,6 @@
 name: Release
 
-# Builds and publishes the Windows binary when the version in Cargo.toml has no tag yet. To release,
+# Builds and publishes the Windows binaries when the version in Cargo.toml has no tag yet. To release,
 # bump the version in Cargo.toml (and Cargo.lock) in the same commit.
 #
 # The release also carries a Scoop manifest, made from Cargo.toml by tools/package, and asks
@@ -59,16 +59,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+          targets: aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --all-targets --target x86_64-pc-windows-msvc --target aarch64-pc-windows-msvc --locked -- -D warnings
       - run: cargo test --locked
-      - run: cargo build --release --locked
+      - run: cargo build --release --locked --target x86_64-pc-windows-msvc --target aarch64-pc-windows-msvc
 
-      # The binary is a single portable file. The packaging tool names it, writes its sha256 and the Scoop
+      # The binaries are single portable files. The packaging tool names them, writes their sha256 and the Scoop
       # manifest, all from Cargo.toml and the build.
       - name: Package
-        run: cargo run --release --locked --manifest-path tools/package/Cargo.toml -- "target/release/$NAME.exe" dist
+        run: cargo run --release --locked --manifest-path tools/package/Cargo.toml -- "target/x86_64-pc-windows-msvc/release/$NAME.exe" "target/aarch64-pc-windows-msvc/release/$NAME.exe" dist
 
       # The notes list the commits since the previous release; pull request notes would miss
       # commits pushed straight to main.
